@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+anthropic
+httpx
+pandas
+openpyxl
+python-pptx
+python-multipart
+sqlalchemy
+psycopg2-binary
+pymysql
