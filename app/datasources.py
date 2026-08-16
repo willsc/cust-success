@@ -8,7 +8,7 @@ connector module.
 """
 import json
 
-from . import db, hubspot, ms365, restsource, spreadsheets, sqlsource
+from . import db, deps, hubspot, ms365, restsource, spreadsheets, sqlsource
 
 # Field spec drives both the UI form and secret masking.
 # kind: text | password | textarea | select | checkbox | number
@@ -33,6 +33,16 @@ TYPES = {
              "placeholder": "renewal_date, arr"},
             {"name": "deals_properties", "label": "Extra deal properties", "kind": "text"},
             {"name": "tickets_properties", "label": "Extra ticket properties", "kind": "text"},
+            {"name": "ticket_pipeline", "label": "Ticket pipeline (for tickets we push)", "kind": "text",
+             "placeholder": "0 or Support Pipeline",
+             "help": "Leave blank to use the portal's first ticket pipeline."},
+            {"name": "ticket_stage_map", "label": "Status → pipeline stage", "kind": "textarea",
+             "placeholder": "open: 1\nin_progress: 2\nwaiting: 3\nclosed: 4",
+             "help": "One per line. Leave blank to map onto the pipeline's stages in order."},
+            {"name": "ticket_property_map", "label": "Field → HubSpot property", "kind": "textarea",
+             "placeholder": "queue: custom_owning_team\ncustomer_id: customer_id_uk_public",
+             "help": "Send our routing fields to custom HubSpot properties. Anything unmapped is "
+                     "written into the ticket body instead, so nothing is lost."},
         ],
     },
     "ms365_mail": {
@@ -98,7 +108,8 @@ def _secret_fields(type_: str) -> set[str]:
 
 def type_catalog() -> list[dict]:
     """Type declarations for the UI's 'Add data source' form."""
-    return [{"type": key, **{k: v for k, v in spec.items()}} for key, spec in TYPES.items()]
+    return [{"type": key, "packs": deps.type_status(key), **{k: v for k, v in spec.items()}}
+            for key, spec in TYPES.items()]
 
 
 def _parse(row: dict) -> dict:
@@ -201,6 +212,8 @@ def test(ds_id: int) -> dict:
             tables = db.sheet_tables(ds_id)
             return {"ok": bool(tables),
                     "message": f"{len(tables)} table(s) loaded." if tables else "No files uploaded yet."}
+    except deps.MissingDependency as exc:
+        return {"ok": False, "message": str(exc), "needs": exc.pack}
     except Exception as exc:
         return {"ok": False, "message": str(exc)}
     return {"ok": False, "message": f"No connection test for type {type_}"}

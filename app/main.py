@@ -4,8 +4,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import bot, datasources, db, spreadsheets
-from .config import ARTIFACT_DIR, BASE_DIR
+from . import bot, datasources, db, deps, settings, sla, spreadsheets, ticketsync, tickets
+from .config import ARTIFACT_DIR, BASE_DIR, EXPORT_DIR
 
 app = FastAPI(title="Customer Success Bot")
 db.init()
@@ -75,6 +75,14 @@ class TicketCreate(BaseModel):
     customer: str = ""
     priority: str = "medium"
     assignee: str = ""
+    # Collection fields: routing, the join key, and who to notify back
+    queue: str = ""
+    request_type: str = ""
+    raised_by: str = ""
+    customer_id: str = ""
+    waiting_on: str = ""
+    response_due: str = ""
+    resolution_due: str = ""
 
 
 class TicketUpdate(BaseModel):
@@ -84,23 +92,84 @@ class TicketUpdate(BaseModel):
     status: str | None = None
     priority: str | None = None
     assignee: str | None = None
+    queue: str | None = None
+    request_type: str | None = None
+    raised_by: str | None = None
+    customer_id: str | None = None
+    waiting_on: str | None = None
+    response_due: str | None = None
+    resolution_due: str | None = None
 
 
 class CommentCreate(BaseModel):
     body: str
 
 
+@app.get("/api/ticket-fields")
+def ticket_fields(user: dict = Depends(current_user)):
+    """Queues, their dependent request types, waiting-on options and the SLA targets."""
+    return tickets.field_catalog()
+
+
+@app.post("/api/ticket-fields/refresh-holidays")
+def ticket_refresh_holidays(user: dict = Depends(current_user)):
+    """Re-pull the published bank holidays so the SLA clock stays right in future years."""
+    return sla.refresh_from_govuk()
+
+
 @app.get("/api/tickets")
-def tickets(status: str | None = None, assignee: str | None = None, user: dict = Depends(current_user)):
-    return db.list_tickets(status, assignee)
+def ticket_list(status: str | None = None, assignee: str | None = None, queue: str | None = None,
+                breached: bool | None = None, user: dict = Depends(current_user)):
+    return db.list_tickets(status, assignee, queue, breached)
 
 
 @app.post("/api/tickets")
 def ticket_create(body: TicketCreate, user: dict = Depends(current_user)):
     if not body.title.strip():
         raise HTTPException(status_code=400, detail="Title is required")
-    return db.create_ticket(body.title.strip(), body.description, body.customer,
-                            body.priority, body.assignee, created_by=user["name"])
+    try:
+        return db.create_ticket(
+            body.title.strip(), body.description, body.customer, body.priority, body.assignee,
+            created_by=user["name"], queue=body.queue, request_type=body.request_type,
+            raised_by=body.raised_by or user["name"], customer_id=body.customer_id,
+            waiting_on=body.waiting_on, response_due=body.response_due,
+            resolution_due=body.resolution_due)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/tickets/export.csv")
+def ticket_export_csv(user: dict = Depends(current_user)):
+    """The local spreadsheet — every ticket, refreshed on each change."""
+    ticketsync.write_exports()
+    path = EXPORT_DIR / "tickets.csv"
+    return FileResponse(path, media_type="text/csv", filename="tickets.csv")
+
+
+@app.get("/api/tickets/export.xlsx")
+def ticket_export_xlsx(user: dict = Depends(current_user)):
+    if not deps.module_present("openpyxl"):
+        raise HTTPException(status_code=503,
+                            detail="Excel export needs the spreadsheet component — install it on the Sources tab.")
+    ticketsync.write_exports()
+    path = EXPORT_DIR / "tickets.xlsx"
+    return FileResponse(path, filename="tickets.xlsx",
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/tickets/sync-status")
+def ticket_sync_status(user: dict = Depends(current_user)):
+    return ticketsync.status()
+
+
+@app.post("/api/tickets/{ticket_id}/sync")
+def ticket_sync(ticket_id: int, user: dict = Depends(current_user)):
+    """Push one ticket to HubSpot now — used for retries and for manual mode."""
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    result = ticketsync.sync(ticket, force=True)
+    return {**result, "ticket": db.get_ticket(ticket_id)}
 
 
 @app.get("/api/tickets/{ticket_id}")
@@ -210,6 +279,8 @@ async def datasource_upload(ds_id: int, file: UploadFile = File(...), user: dict
     content = await file.read()
     try:
         tables = spreadsheets.ingest_file(file.filename, content, datasource_id=ds_id)
+    except deps.MissingDependency as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
     return {"loaded": tables}
@@ -222,6 +293,61 @@ def datasource_drop_table(ds_id: int, table_name: str, user: dict = Depends(curr
         raise HTTPException(status_code=404, detail="Table not found on this data source")
     spreadsheets.drop_table(table_name)
     return {"ok": True}
+
+
+# ---------- settings: API keys and shared credentials ----------
+
+class SettingsUpdate(BaseModel):
+    values: dict[str, str]
+
+
+@app.get("/api/settings")
+def settings_get(user: dict = Depends(current_user)):
+    return settings.public()
+
+
+@app.patch("/api/settings")
+def settings_patch(body: SettingsUpdate, user: dict = Depends(current_user)):
+    try:
+        return settings.save(body.values, updated_by=user["name"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/settings/test-claude")
+def settings_test_claude(user: dict = Depends(current_user)):
+    """Round-trips the configured key and model so you know before you rely on it."""
+    return bot.test_connection()
+
+
+# ---------- optional components ----------
+
+class InstallRequest(BaseModel):
+    keys: list[str]
+
+
+@app.get("/api/setup")
+def setup_status(user: dict = Depends(current_user)):
+    """Which optional packs are installed, and any install currently running."""
+    return deps.overview()
+
+
+@app.post("/api/setup/install")
+def setup_install(body: InstallRequest, user: dict = Depends(current_user)):
+    try:
+        return deps.install(body.keys)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:  # another install already running
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/setup/jobs/{job_id}")
+def setup_job(job_id: int, user: dict = Depends(current_user)):
+    job = deps.job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="No such install job")
+    return job
 
 
 # ---------- artifacts ----------

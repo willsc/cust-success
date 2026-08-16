@@ -2,10 +2,7 @@
 import re
 import secrets
 
-from pptx import Presentation
-from pptx.util import Inches, Pt
-
-from . import db
+from . import db, deps
 from .config import ARTIFACT_DIR
 
 REPORT_TEMPLATE = """<!doctype html>
@@ -42,6 +39,10 @@ def create_report(title: str, body_html: str, author: str = "") -> dict:
 
 def create_presentation(title: str, slides: list[dict], author: str = "") -> dict:
     """slides: [{"title": str, "bullets": [str, ...]}, ...]"""
+    deps.require("decks")  # HTML reports work without python-pptx; decks don't
+    from pptx import Presentation
+    from pptx.util import Pt
+
     prs = Presentation()
 
     # title slide

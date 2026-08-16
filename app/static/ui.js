@@ -6,6 +6,10 @@ let token = localStorage.getItem("cs_token") || "";
 let me = null;
 let sourceTypes = [];
 let ticketCache = [];
+let ticketFields = null;   // queues, dependent request types, SLA targets
+let syncStatus = null;     // where tickets get committed (HubSpot vs local)
+let setup = null;      // optional-component status from /api/setup
+let jobTimer = null;   // poll handle for a running install
 
 /* ── helpers ─────────────────────────────────────────── */
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -245,15 +249,102 @@ const COLUMNS = [
 ];
 
 async function loadTickets() {
-  ticketCache = await api("/api/tickets");
+  if (!ticketFields) ticketFields = await api("/api/ticket-fields");
+  [ticketCache, syncStatus] = await Promise.all([
+    api("/api/tickets"), api("/api/tickets/sync-status").catch(() => syncStatus)]);
   renderBoard();
+  renderSyncBar();
   loadCounts();
 }
+
+/* ── where tickets are committed ─────────────────────
+   HubSpot when a source is connected; the local board + spreadsheet always. */
+
+const SYNC_CHIP = {
+  hubspot: { cls: "ok", text: "in HubSpot" },
+  local:   { cls: "local", text: "local only" },
+  off:     { cls: "local", text: "local only" },
+  error:   { cls: "fail", text: "sync failed" },
+};
+
+function syncBadge(t) {
+  const chip = SYNC_CHIP[t.sync_state];
+  if (!chip) return "";
+  const title = t.sync_error || (t.hubspot_id ? `HubSpot ticket ${t.hubspot_id}` : "Kept in the local board and spreadsheet");
+  return `<span class="sync ${chip.cls}" title="${esc(title)}">${chip.text}${
+    t.hubspot_id && t.sync_state === "hubspot" ? ` #${esc(t.hubspot_id)}` : ""}</span>`;
+}
+
+function renderSyncBar() {
+  const bar = $("#sync-bar");
+  if (!syncStatus) { bar.innerHTML = ""; return; }
+  const { hubspot_connected, hubspot_source, mode, exports } = syncStatus;
+  const where = hubspot_connected
+    ? `Committing tickets to <strong>${esc(hubspot_source)}</strong> in HubSpot${mode === "auto" ? " as they change" : ""}.`
+    : `No HubSpot connected — tickets live in the local board and spreadsheet.`;
+  const modeNote = mode === "manual" ? " Manual mode: push each ticket from its detail view."
+    : mode === "off" ? " Sync is off in Settings." : "";
+  bar.innerHTML = `
+    <span class="sync ${hubspot_connected && mode !== "off" ? "ok" : "local"}">${
+      hubspot_connected && mode !== "off" ? "hubspot" : "local"}</span>
+    <span>${where}${esc(modeNote)}</span>
+    <span class="sync-links">
+      <a href="${exports.csv}" download>CSV</a>
+      ${exports.xlsx ? `<a href="${exports.xlsx}" download>Excel</a>` : ""}
+    </span>`;
+}
+
+/* ── SLA presentation ────────────────────────────────
+   The clock runs in UK business hours server-side; the UI only formats it. */
+
+function slaHours(h) {
+  const abs = Math.abs(h);
+  if (abs >= 8) {
+    const days = abs / 8;
+    return `${days >= 10 ? Math.round(days) : days.toFixed(1).replace(/\.0$/, "")}d`;
+  }
+  return `${abs >= 1 ? Math.round(abs) : Math.round(abs * 60) / 60}h`;
+}
+
+/** Badge for the tighter of the two clocks: breached > paused > due soon > on track. */
+function slaBadge(t) {
+  if (t.status === "closed" && !t.sla_response_breached && !t.sla_resolution_breached) return "";
+  if (t.sla_response_breached || t.sla_resolution_breached) {
+    const which = [t.sla_response_breached && "response", t.sla_resolution_breached && "resolution"]
+      .filter(Boolean).join(" + ");
+    return `<span class="sla breached" title="SLA breached: ${which}">${icon("clock")}breached</span>`;
+  }
+  if (t.sla?.paused) {
+    return `<span class="sla paused" title="Clock paused — waiting on ${esc(t.waiting_on)}">${icon("pause")}on hold</span>`;
+  }
+  const left = [t.sla?.response_remaining_hours, t.sla?.resolution_remaining_hours]
+    .filter((h) => h !== null && h !== undefined);
+  if (!left.length) return "";
+  const soonest = Math.min(...left);
+  const cls = soonest <= 2 ? "urgent" : soonest <= 8 ? "soon" : "ok";
+  return `<span class="sla ${cls}" title="Business hours left before the next SLA target">${icon("clock")}${slaHours(soonest)} left</span>`;
+}
+
+const fmtDue = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString([], { weekday: "short", day: "numeric", month: "short",
+                                hour: "2-digit", minute: "2-digit" });
+};
+
+/** <input type="datetime-local"> wants local time with no zone; the API wants ISO. */
+const toLocalInput = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+};
+const fromLocalInput = (v) => (v ? new Date(v).toISOString().replace(/\.\d+Z$/, "+00:00") : "");
 
 function renderBoard() {
   const term = $("#ticket-search").value.trim().toLowerCase();
   const visible = ticketCache.filter((t) =>
-    !term || `${t.title} ${t.customer} ${t.assignee} ${t.description}`.toLowerCase().includes(term));
+    !term || `${t.title} ${t.customer} ${t.customer_id} ${t.assignee} ${t.raised_by} ${t.queue} ${t.request_type} ${t.description}`
+      .toLowerCase().includes(term));
 
   $("#board").innerHTML = "";
   COLUMNS.forEach((col) => {
@@ -272,8 +363,12 @@ function renderBoard() {
         <div class="t-title">${esc(t.title)}</div>
         <div class="t-meta">
           <span class="tag ${esc(t.priority)}">${esc(t.priority)}</span>
+          ${t.queue ? `<span class="tag queue">${esc(t.queue)}</span>` : ""}
+          ${t.request_type ? `<span class="tag">${esc(t.request_type)}</span>` : ""}
           ${t.customer ? `<span class="tag">${esc(t.customer)}</span>` : ""}
           ${t.assignee ? `<span class="tag">${esc(t.assignee)}</span>` : ""}
+          ${slaBadge(t)}
+          ${syncBadge(t)}
         </div>`;
       card.addEventListener("click", () => openTicket(t.id));
       card.addEventListener("dragstart", (e) => {
@@ -308,77 +403,456 @@ function renderBoard() {
 
 $("#ticket-search").addEventListener("input", renderBoard);
 
+/* Request type depends on the queue: repopulate whenever the queue changes. */
+function bindQueueDependency(root, queueSel, typeSel, current = "") {
+  const queueEl = $(queueSel, root), typeEl = $(typeSel, root);
+  const fill = () => {
+    const queue = ticketFields.queues.find((q) => q.name === queueEl.value);
+    const options = queue ? queue.request_types : [];
+    typeEl.innerHTML = `<option value="">${queue ? "Choose…" : "Pick a queue first"}</option>` +
+      options.map((r) => `<option ${r === current ? "selected" : ""}>${esc(r)}</option>`).join("");
+    typeEl.disabled = !queue;
+    const cal = queue ? ` · ${queue.calendar_label} bank holidays` : "";
+    const note = $(`${typeSel}-note`, root);
+    if (note) note.textContent = queue ? `${queue.request_types.length} request types${cal}` : "";
+  };
+  queueEl.addEventListener("change", () => { current = ""; fill(); });
+  fill();
+}
+
+const targetHint = (priority) => {
+  const t = ticketFields?.targets?.[priority];
+  if (!t) return "";
+  return `Target: respond in ${t.response_hours}h, resolve in ${t.resolution_hours}h of UK business time `
+    + `(${ticketFields.business_hours.start}–${ticketFields.business_hours.end}).`;
+};
+
 $("#ticket-new").addEventListener("click", async () => {
+  if (!ticketFields) ticketFields = await api("/api/ticket-fields");
   const users = await api("/api/users");
   const m = modal(`
-    <div class="modal-head"><h2>New ticket</h2></div>
+    <div class="modal-head"><h2>New ticket</h2>
+      <button class="icon-btn" data-close>${icon("close")}</button></div>
     <label>Title<input id="nt-title" placeholder="Short summary of the issue"></label>
-    <label>Customer<input id="nt-customer" placeholder="Acme Retail"></label>
-    <label>Description<textarea id="nt-desc" rows="3"></textarea></label>
     <div class="row">
-      <label>Priority<select id="nt-priority">
-        <option value="low">Low</option><option value="medium" selected>Medium</option>
-        <option value="high">High</option><option value="urgent">Urgent</option></select></label>
-      <label>Assignee<select id="nt-assignee"><option value="">Unassigned</option>
+      <label>Owning team / queue *<select id="nt-queue">
+        <option value="">Choose…</option>
+        ${ticketFields.queues.map((q) => `<option>${esc(q.name)}</option>`).join("")}</select></label>
+      <label>Request type *<select id="nt-type" disabled><option value="">Pick a queue first</option></select></label>
+    </div>
+    <div class="field-help" id="nt-type-note"></div>
+    <div class="row">
+      <label>Raised by (CSM) *<select id="nt-raised">
+        ${users.map((u) => `<option ${u.name === me.name ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+      <label>Assignee (owner)<select id="nt-assignee"><option value="">Unassigned</option>
         ${users.map((u) => `<option>${esc(u.name)}</option>`).join("")}</select></label>
     </div>
+    <div class="row">
+      <label>Customer<input id="nt-customer" placeholder="Acme Retail"></label>
+      <label>Customer ID *<input id="nt-customer-id" placeholder="customer_id_uk_public"></label>
+    </div>
+    <label>Description<textarea id="nt-desc" rows="3"></textarea></label>
+    <label>Priority<select id="nt-priority">
+      <option value="low">Low</option><option value="medium" selected>Medium</option>
+      <option value="high">High</option><option value="urgent">Urgent</option></select></label>
+    <div class="field-help" id="nt-target">${esc(targetHint("medium"))}</div>
     <div class="modal-foot"><button class="ghost" data-close>Cancel</button>
-      <button class="primary" id="nt-save">Create ticket</button></div>`);
-  $("[data-close]", m.el).addEventListener("click", m.close);
+      <button class="primary" id="nt-save">Create ticket</button></div>`, { wide: true });
+
+  $$("[data-close]", m.el).forEach((b) => b.addEventListener("click", m.close));
+  bindQueueDependency(m.el, "#nt-queue", "#nt-type");
+  $("#nt-priority", m.el).addEventListener("change", (e) => {
+    $("#nt-target", m.el).textContent = targetHint(e.target.value);
+  });
+
   $("#nt-save", m.el).addEventListener("click", async () => {
     const title = $("#nt-title", m.el).value.trim();
     if (!title) return toast("Give the ticket a title", "fail");
     try {
-      await api("/api/tickets", { method: "POST", json: {
+      const created = await api("/api/tickets", { method: "POST", json: {
         title, customer: $("#nt-customer", m.el).value, description: $("#nt-desc", m.el).value,
-        priority: $("#nt-priority", m.el).value, assignee: $("#nt-assignee", m.el).value } });
-      m.close(); toast("Ticket created", "ok"); loadTickets();
+        priority: $("#nt-priority", m.el).value, assignee: $("#nt-assignee", m.el).value,
+        queue: $("#nt-queue", m.el).value, request_type: $("#nt-type", m.el).value,
+        raised_by: $("#nt-raised", m.el).value, customer_id: $("#nt-customer-id", m.el).value } });
+      m.close();
+      toast(`#${created.id} created — respond by ${fmtDue(created.response_due)}`, "ok");
+      loadTickets();
     } catch (e) { toast(e.message, "fail"); }
   });
 });
 
+function slaPanel(t) {
+  const row = (label, due, doneLabel, done, breached, remaining) => `
+    <div class="sla-row ${breached ? "breached" : ""}">
+      <span class="sla-name">${label}</span>
+      <span class="sla-due">${fmtDue(due)}</span>
+      <span class="sla-left">${done ? `${doneLabel} ${fmtDue(done)}`
+        : remaining === null || remaining === undefined ? ""
+        : remaining < 0 ? `${slaHours(remaining)} over` : `${slaHours(remaining)} left`}</span>
+      ${breached ? `<span class="sla breached">breached</span>` : ""}
+    </div>`;
+  return `
+    <div class="sla-panel">
+      ${row("Response", t.response_due, "answered", t.first_response_at,
+            t.sla_response_breached, t.sla?.response_remaining_hours)}
+      ${row("Resolution", t.resolution_due, "closed", t.resolved_at,
+            t.sla_resolution_breached, t.sla?.resolution_remaining_hours)}
+      <div class="sla-foot muted">
+        ${t.sla?.paused ? `⏸ Clock paused since ${fmtDue(t.paused_since)} — waiting on ${esc(t.waiting_on)}. ` : ""}
+        ${t.total_paused_hours ? `Paused for ${t.total_paused_hours}h of business time in total. ` : ""}
+        UK business hours, ${esc(t.sla?.calendar || "england-and-wales").replace(/-/g, " ")} holidays.
+      </div>
+    </div>`;
+}
+
 async function openTicket(id) {
+  if (!ticketFields) ticketFields = await api("/api/ticket-fields");
   const [t, users] = await Promise.all([api("/api/tickets/" + id), api("/api/users")]);
   const opt = (values, current) => values.map((v) =>
     `<option value="${v}" ${v === current ? "selected" : ""}>${v.replace("_", " ")}</option>`).join("");
 
   const m = modal(`
-    <div class="modal-head"><h2>#${t.id} ${esc(t.title)}</h2>
+    <div class="modal-head"><h2>#${t.id} ${esc(t.title)} ${slaBadge(t)} ${syncBadge(t)}</h2>
       <button class="icon-btn" data-close>${icon("close")}</button></div>
-    <p class="muted">${esc(t.customer || "No customer")} · created by ${esc(t.created_by || "—")} · ${esc(t.created_at.slice(0, 10))}</p>
+    ${t.sync_error ? `<p class="sync-error">Last push failed: ${esc(t.sync_error)}</p>` : ""}
+    <p class="muted">${esc(t.customer || "No customer")}${t.customer_id ? ` · ${esc(t.customer_id)}` : ""}
+      · raised by ${esc(t.raised_by || t.created_by || "—")} · ${esc(t.created_at.slice(0, 10))}</p>
     <p>${esc(t.description || "No description.")}</p>
+    ${slaPanel(t)}
     <div class="row" style="margin-top:1rem">
+      <label>Owning team / queue<select id="dt-queue">
+        ${ticketFields.queues.map((q) => `<option ${q.name === t.queue ? "selected" : ""}>${esc(q.name)}</option>`).join("")}</select></label>
+      <label>Request type<select id="dt-type"></select></label>
+    </div>
+    <div class="field-help" id="dt-type-note"></div>
+    <div class="row">
       <label>Status<select id="dt-status">${opt(["open", "in_progress", "waiting", "closed"], t.status)}</select></label>
       <label>Priority<select id="dt-priority">${opt(["low", "medium", "high", "urgent"], t.priority)}</select></label>
-      <label>Assignee<select id="dt-assignee"><option value="">Unassigned</option>
-        ${users.map((u) => `<option ${u.name === t.assignee ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+      <label>Waiting on<select id="dt-waiting">
+        <option value="">Nobody — clock running</option>
+        ${ticketFields.waiting_on.map((w) => `<option ${w === t.waiting_on ? "selected" : ""}>${esc(w)}</option>`).join("")}</select></label>
     </div>
+    <div class="field-help">Setting "waiting on" pauses the SLA clock; clearing it pushes the deadlines out by the time waited.</div>
+    <div class="row">
+      <label>Raised by (CSM)<select id="dt-raised"><option value="">—</option>
+        ${users.map((u) => `<option ${u.name === t.raised_by ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+      <label>Assignee (owner)<select id="dt-assignee"><option value="">Unassigned</option>
+        ${users.map((u) => `<option ${u.name === t.assignee ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+      <label>Customer ID<input id="dt-customer-id" value="${esc(t.customer_id || "")}"></label>
+    </div>
+    <details class="due-override"><summary>Override due dates</summary>
+      <div class="row">
+        <label>Response due<input type="datetime-local" id="dt-response-due" value="${toLocalInput(t.response_due)}"></label>
+        <label>Resolution due<input type="datetime-local" id="dt-resolution-due" value="${toLocalInput(t.resolution_due)}"></label>
+      </div>
+      <div class="field-help">Set by the clock from priority and queue. Editing these stops them being
+        retargeted when the priority changes.</div>
+    </details>
     <h3 style="margin-top:1rem">Activity</h3>
     ${t.comments.length ? t.comments.map((c) => `
       <div class="comment"><div class="who-line">${esc(c.author)} · ${esc(c.created_at.slice(0, 16).replace("T", " "))}</div>${esc(c.body)}</div>`).join("")
       : `<p class="muted">No comments yet.</p>`}
     <label style="margin-top:.8rem">Add a comment<textarea id="dt-comment" rows="2"></textarea></label>
     <div class="modal-foot">
+      <button class="ghost spacer" id="dt-push">${icon("send")}${
+        t.hubspot_id ? "Re-push to HubSpot" : "Push to HubSpot"}</button>
       <button class="ghost" id="dt-comment-btn">Comment</button>
       <button class="ghost" data-close>Close</button>
       <button class="primary" id="dt-save">Save changes</button>
     </div>`, { wide: true });
 
   $$("[data-close]", m.el).forEach((b) => b.addEventListener("click", m.close));
+  bindQueueDependency(m.el, "#dt-queue", "#dt-type", t.request_type);
+
   $("#dt-save", m.el).addEventListener("click", async () => {
+    const payload = {
+      status: $("#dt-status", m.el).value, priority: $("#dt-priority", m.el).value,
+      assignee: $("#dt-assignee", m.el).value, queue: $("#dt-queue", m.el).value,
+      request_type: $("#dt-type", m.el).value, raised_by: $("#dt-raised", m.el).value,
+      customer_id: $("#dt-customer-id", m.el).value, waiting_on: $("#dt-waiting", m.el).value,
+    };
+    // Only send due dates the user actually changed, so the clock keeps ownership of them.
+    const response = fromLocalInput($("#dt-response-due", m.el).value);
+    const resolution = fromLocalInput($("#dt-resolution-due", m.el).value);
+    if (response && response !== t.response_due) payload.response_due = response;
+    if (resolution && resolution !== t.resolution_due) payload.resolution_due = resolution;
     try {
-      await api("/api/tickets/" + id, { method: "PATCH", json: {
-        status: $("#dt-status", m.el).value, priority: $("#dt-priority", m.el).value,
-        assignee: $("#dt-assignee", m.el).value } });
+      await api("/api/tickets/" + id, { method: "PATCH", json: payload });
       m.close(); toast("Ticket updated", "ok"); loadTickets();
     } catch (e) { toast(e.message, "fail"); }
   });
+  $("#dt-push", m.el).addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Pushing…";
+    try {
+      const r = await api(`/api/tickets/${id}/sync`, { method: "POST" });
+      toast(r.message || (r.state === "hubspot" ? "Pushed to HubSpot" : "Saved locally"),
+            r.state === "error" ? "fail" : "ok");
+      m.close(); loadTickets();
+      if (r.state !== "error") openTicket(id);
+    } catch (err) { toast(err.message, "fail"); e.target.disabled = false; }
+  });
+
   $("#dt-comment-btn", m.el).addEventListener("click", async () => {
     const body = $("#dt-comment", m.el).value.trim();
     if (!body) return;
     await api(`/api/tickets/${id}/comments`, { method: "POST", json: { body } });
     m.close(); openTicket(id); loadTickets();
   });
+}
+
+/* ── settings: API keys and credentials ──────────────
+   Everything that used to live in .env is editable here and takes effect on
+   save — no file, no restart. Secrets come back masked and are only sent when
+   actually retyped. */
+let settingsCache = null;
+
+const SOURCE_CHIP = {
+  ui:      { cls: "live", text: "set here" },
+  env:     { cls: "demo", text: "from environment" },
+  default: { cls: "off",  text: "default" },
+  unset:   { cls: "off",  text: "not set" },
+};
+
+async function loadSettings() {
+  try { settingsCache = await api("/api/settings"); } catch { /* offline */ }
+  return settingsCache;
+}
+
+function settingFieldHtml(field) {
+  const chip = SOURCE_CHIP[field.source] || SOURCE_CHIP.unset;
+  const type = field.kind === "password" ? "password" : "text";
+  const by = field.updated_by ? ` · by ${esc(field.updated_by)}` : "";
+  const control = field.kind === "select"
+    ? `<select id="s-${field.key}">${(field.options || []).map((o) =>
+        `<option ${o === field.value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
+    : `<input id="s-${field.key}" type="${type}" value="${esc(field.value)}"
+        placeholder="${esc(field.placeholder || "")}" autocomplete="off" spellcheck="false">`;
+  return `
+    <label class="set-label">
+      <span class="set-head">${esc(field.label)}
+        <span class="status ${chip.cls}">${chip.text}${field.source === "ui" ? by : ""}</span></span>
+      ${control}
+    </label>
+    ${field.help ? `<div class="field-help">${esc(field.help)}</div>` : ""}
+    ${field.source === "ui" && field.env_present
+      ? `<div class="field-help">Overrides the ${esc(field.key)} environment variable — clear the box to go back to it.</div>`
+      : ""}`;
+}
+
+function holidaySectionHtml() {
+  const cal = ticketFields?.calendars;
+  if (!cal) return "";
+  return `
+    <section class="set-group">
+      <h3>SLA calendar</h3>
+      <p class="muted">Ticket due dates run on UK business hours
+        (${esc(ticketFields.business_hours.start)}–${esc(ticketFields.business_hours.end)},
+        ${esc(ticketFields.business_hours.timezone)}) and skip bank holidays.
+        Source: <strong>${esc(cal.source)}</strong>${cal.fetched_at ? ` · updated ${esc(cal.fetched_at.slice(0, 10))}` : ""}.</p>
+      ${cal.calendars.map((c) => `<div class="schema-row"><code>${esc(c.label)}</code>
+        <span class="muted">${c.count} days</span>
+        <span class="cols">${esc(c.from)} → ${esc(c.to)}</span></div>`).join("")}
+      <button class="small ghost" id="set-holidays" style="margin-top:.6rem">
+        ${icon("down")}Refresh from gov.uk</button>
+    </section>`;
+}
+
+async function openSettings() {
+  const data = await loadSettings();
+  if (!data) return toast("Can't reach the server", "fail");
+  if (!ticketFields) { try { ticketFields = await api("/api/ticket-fields"); } catch { /* optional */ } }
+
+  const m = modal(`
+    <div class="modal-head">
+      <h2><span class="m-ico set-ico">${icon("key")}</span>Settings</h2>
+      <button class="icon-btn" data-close>${icon("close")}</button></div>
+    <p class="muted">Keys and credentials are stored on the server and take effect immediately.
+      Anything left blank falls back to an environment variable of the same name, then to the default.</p>
+    ${data.groups.map((g) => `
+      <section class="set-group">
+        <h3>${esc(g.label)}</h3>
+        <p class="muted">${esc(g.blurb)}</p>
+        ${data.fields.filter((f) => f.group === g.key).map(settingFieldHtml).join("")}
+      </section>`).join("")}
+    ${holidaySectionHtml()}
+    <div class="modal-foot">
+      <button class="ghost spacer" id="set-test">Test Claude key</button>
+      <button class="ghost" data-close>Cancel</button>
+      <button class="primary" id="set-save">Save</button>
+    </div>`, { wide: true });
+
+  $$("[data-close]", m.el).forEach((b) => b.addEventListener("click", m.close));
+
+  const collect = () => Object.fromEntries(
+    data.fields.map((f) => [f.key, $(`#s-${f.key}`, m.el).value.trim()]));
+
+  const save = async () => {
+    settingsCache = await api("/api/settings", { method: "PATCH", json: { values: collect() } });
+    return settingsCache;
+  };
+
+  $("#set-test", m.el).addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Testing…";
+    try {
+      await save();   // test what's on screen, not what was there before
+      const r = await api("/api/settings/test-claude", { method: "POST" });
+      toast(r.message, r.ok ? "ok" : "fail");
+    } catch (err) { toast(err.message, "fail"); }
+    finally { e.target.disabled = false; e.target.textContent = "Test Claude key"; }
+  });
+
+  $("#set-holidays", m.el)?.addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Fetching…";
+    try {
+      const r = await api("/api/ticket-fields/refresh-holidays", { method: "POST" });
+      toast(r.message, r.ok ? "ok" : "fail");
+      ticketFields = await api("/api/ticket-fields");
+      ticketCache = [];
+    } catch (err) { toast(err.message, "fail"); }
+    finally { e.target.disabled = false; e.target.textContent = "Refresh from gov.uk"; }
+  });
+
+  $("#set-save", m.el).addEventListener("click", async () => {
+    try {
+      await save();
+      m.close();
+      toast("Settings saved", "ok");
+      $("#no-key-warning")?.remove();
+    } catch (e) { toast(e.message, "fail"); }
+  });
+}
+
+$("#settings-btn").addEventListener("click", openSettings);
+
+/* ── optional components ─────────────────────────────
+   The base install is small; spreadsheets, SQL and decks pull their own
+   packages in from here so nobody has to touch a terminal. */
+
+const packsFor = (type) => setup?.types?.[type] || { required: [], optional: [], ready: true };
+const missingRequired = (type) => packsFor(type).required.filter((p) => !p.installed);
+const missingOptional = (type) => packsFor(type).optional.filter((p) => !p.installed);
+
+async function loadSetup() {
+  try { setup = await api("/api/setup"); } catch { /* keeps the tab usable */ }
+  // An install started before a page reload keeps running server-side — pick it back up.
+  if (setup?.job?.state === "running" && !jobTimer) pollInstall(setup.job.id);
+  return setup;
+}
+
+async function installPacks(keys) {
+  if (!keys.length) return;
+  if (!setup) await loadSetup();
+  if (!setup) return toast("Can't reach the server", "fail");
+  try {
+    const job = await api("/api/setup/install", { method: "POST", json: { keys } });
+    setup.job = job;
+    renderSetupPanel();
+    pollInstall(job.id);
+  } catch (e) { toast(e.message, "fail"); }
+}
+
+async function pollInstall(id) {
+  clearTimeout(jobTimer);
+  let job;
+  try { job = await api(`/api/setup/jobs/${id}`); }
+  catch (e) { jobTimer = null; return toast(e.message, "fail"); }
+
+  setup.job = job;
+  renderSetupPanel();
+  if (job.state === "running") {
+    jobTimer = setTimeout(() => pollInstall(id), 900);
+    return;
+  }
+  jobTimer = null;
+  if (job.state === "done") toast(`${job.labels.join(", ")} ready`, "ok");
+  else toast(job.error || "Install failed — see the log", "fail");
+  await loadSetup();
+  loadSources();
+}
+
+function packRow(pack, job) {
+  const busy = job?.state === "running" && job.keys.includes(pack.key);
+  const status = pack.installed
+    ? `<span class="status live">installed</span>`
+    : busy ? `<span class="status demo">installing…</span>`
+    : `<span class="status off">not installed</span>`;
+  const action = pack.installed
+    ? ""
+    : setup.install_enabled
+      ? `<button class="small primary" data-install="${pack.key}" ${busy || job?.state === "running" ? "disabled" : ""}>
+           ${icon("down")}Install</button>`
+      : `<code class="pack-cmd">pip install ${esc(pack.packages.join(" "))}</code>`;
+  return `
+    <div class="pack ${pack.installed ? "on" : ""}">
+      <span class="pack-ico">${icon("box")}</span>
+      <div class="pack-body">
+        <strong>${esc(pack.label)} ${status}</strong>
+        <p class="muted">${esc(pack.blurb)}</p>
+        <p class="pack-meta">${esc(pack.packages.join(", "))}${pack.size ? ` · ${esc(pack.size)}` : ""}</p>
+      </div>
+      <div class="pack-action">${action}</div>
+    </div>`;
+}
+
+function renderSetupPanel() {
+  const panel = $("#setup-panel");
+  const packs = setup?.packs || [];
+  const job = setup?.job;
+  const running = job?.state === "running";
+  const missing = packs.filter((p) => !p.installed);
+
+  if (!missing.length && !running) { panel.innerHTML = ""; panel.classList.add("hidden"); return; }
+  panel.classList.remove("hidden");
+
+  const shown = packs.filter((p) => !p.installed || (running && job.keys.includes(p.key)));
+  panel.innerHTML = `
+    <div class="setup-head">
+      <div>
+        <p class="kicker">Components</p>
+        <h2>${missing.length} optional component${missing.length === 1 ? "" : "s"} not installed</h2>
+        <p class="muted">The base install stays light — add only what you use. Installs go into this
+          app's Python environment and take effect immediately, no restart.</p>
+      </div>
+      ${missing.length > 1 && setup.install_enabled
+        ? `<button class="primary" id="install-all" ${running ? "disabled" : ""}>${icon("down")}Install all</button>` : ""}
+    </div>
+    ${setup.install_enabled ? "" : `<p class="muted">One-click install is disabled on this server — run the
+      commands below in the app folder instead.</p>`}
+    ${!setup.in_venv && setup.install_enabled ? `<p class="muted">⚠️ Not running inside a virtual environment —
+      packages install into the system Python (${esc(setup.python)}).</p>` : ""}
+    <div class="pack-list">${shown.map((p) => packRow(p, job)).join("")}</div>
+    ${job && (running || job.state === "failed") ? `
+      <div class="install-status ${job.state}">
+        <strong>${running ? "Installing" : "Failed"}: ${esc(job.labels.join(", "))}</strong>
+        ${job.error ? `<p class="err-line">${esc(job.error)}</p>` : ""}
+        <pre class="install-log">${esc(job.log.slice(-8).join("\n"))}</pre>
+      </div>` : ""}`;
+
+  $("#install-all", panel)?.addEventListener("click", () =>
+    installPacks(packs.filter((p) => !p.installed).map((p) => p.key)));
+  $$("[data-install]", panel).forEach((btn) =>
+    btn.addEventListener("click", () => installPacks([btn.dataset.install])));
+}
+
+/* Banner on a source card whose type needs a package it hasn't got. */
+function packNotice(needed, drivers) {
+  const el = document.createElement("div");
+  const blocking = needed.length > 0;
+  el.className = "pack-notice" + (blocking ? "" : " soft");
+  const names = (packs) => packs.map((p) => p.label).join(" + ");
+  el.innerHTML = blocking
+    ? `<span class="pack-ico">${icon("box")}</span>
+       <div><strong>Needs ${esc(names(needed))}</strong>
+       <p class="muted">${esc(needed.map((p) => p.packages.join(", ")).join(" · "))} — install once and this
+         source starts working.</p></div>
+       ${setup.install_enabled ? `<button class="small primary" data-go>${icon("down")}Install</button>` : ""}`
+    : `<span class="pack-ico">${icon("box")}</span>
+       <div><strong>Optional drivers available</strong>
+       <p class="muted">${esc(names(drivers))} not installed — only needed for those connection URLs.</p></div>
+       ${setup.install_enabled ? `<button class="small ghost" data-go>Install</button>` : ""}`;
+  $("[data-go]", el)?.addEventListener("click", () =>
+    installPacks((blocking ? needed : drivers).map((p) => p.key)));
+  return el;
 }
 
 /* ── data sources ────────────────────────────────────── */
@@ -388,7 +862,8 @@ async function loadSources() {
     list.innerHTML = `<div class="skeleton">${'<div class="sk-row"></div>'.repeat(3)}</div>`;
   }
   if (!sourceTypes.length) sourceTypes = await api("/api/datasource-types");
-  const sources = await api("/api/datasources");
+  const [sources] = await Promise.all([api("/api/datasources"), setup ? null : loadSetup()]);
+  renderSetupPanel();
   list.innerHTML = "";
 
   if (!sources.length) {
@@ -426,6 +901,10 @@ async function loadSources() {
         </div>
       </div>`;
 
+    const needed = missingRequired(s.type);
+    const drivers = missingOptional(s.type);
+    if (needed.length || drivers.length) card.appendChild(packNotice(needed, drivers));
+
     if (s.type === "spreadsheet") {
       const schema = document.createElement("div");
       schema.className = "schema";
@@ -438,14 +917,16 @@ async function loadSources() {
         </div>`).join("") || `<p class="muted">No files loaded yet.</p>`;
 
       const zone = document.createElement("div");
-      zone.className = "dropzone";
-      const zoneLabel = `${icon("upload")}<span>Drop a CSV or Excel file here, or click to choose</span>`;
+      zone.className = "dropzone" + (needed.length ? " locked" : "");
+      const zoneLabel = needed.length
+        ? `${icon("box")}<span>Install the spreadsheet engine above to upload files</span>`
+        : `${icon("upload")}<span>Drop a CSV or Excel file here, or click to choose</span>`;
       zone.innerHTML = zoneLabel;
       const picker = document.createElement("input");
       picker.type = "file"; picker.accept = ".csv,.xlsx,.xls"; picker.className = "hidden";
 
       const upload = async (file) => {
-        if (!file) return;
+        if (!file || needed.length) return;
         const form = new FormData();
         form.append("file", file);
         zone.innerHTML = `<span>Uploading ${esc(file.name)}…</span>`;
@@ -455,7 +936,7 @@ async function loadSources() {
           loadSources();
         } catch (e) { toast(e.message, "fail"); zone.innerHTML = zoneLabel; }
       };
-      zone.addEventListener("click", () => picker.click());
+      zone.addEventListener("click", () => needed.length ? installPacks(needed.map((p) => p.key)) : picker.click());
       picker.addEventListener("change", () => upload(picker.files[0]));
       zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("over"); });
       zone.addEventListener("dragleave", () => zone.classList.remove("over"));
@@ -474,6 +955,7 @@ async function loadSources() {
       try {
         const r = await api(`/api/datasources/${s.id}/test`, { method: "POST" });
         toast(r.message, r.ok ? "ok" : "fail");
+        if (r.needs) installPacks([r.needs]);   // missing package — fetch it now
       } catch (err) { toast(err.message, "fail"); }
       finally { e.target.disabled = false; e.target.textContent = "Test"; }
     });
@@ -593,6 +1075,7 @@ function editSource(source, spec) {
       await save();
       const r = await api(`/api/datasources/${source.id}/test`, { method: "POST" });
       toast(r.message, r.ok ? "ok" : "fail");
+      if (r.needs) installPacks([r.needs]);
     } catch (err) { toast(err.message, "fail"); }
     finally { e.target.disabled = false; e.target.textContent = "Test connection"; }
   });
@@ -605,27 +1088,36 @@ function editSource(source, spec) {
 
 $("#source-new").addEventListener("click", async () => {
   if (!sourceTypes.length) sourceTypes = await api("/api/datasource-types");
+  if (!setup) await loadSetup();
   const m = modal(`
     <div class="modal-head"><h2>Add a data source</h2>
       <button class="icon-btn" data-close>${icon("close")}</button></div>
-    <p class="muted">Pick what you're connecting.</p>
+    <p class="muted">Pick what you're connecting. Anything that needs an extra package says so —
+      it's installed for you when you pick it.</p>
     <div class="type-grid">
-      ${sourceTypes.map((t) => `
+      ${sourceTypes.map((t) => {
+        const needed = missingRequired(t.type);
+        return `
         <button class="type-card" data-type="${t.type}">
           <span class="t-ico source-icon t-${esc(t.type)}">${typeIcon(t.type)}</span>
           <span class="t-name">${esc(t.label)}</span>
           <span class="t-blurb">${esc(t.blurb)}</span>
-        </button>`).join("")}
+          ${needed.length ? `<span class="t-need">${icon("box")}Installs ${esc(
+            needed.map((p) => p.label).join(" + "))}</span>` : ""}
+        </button>`; }).join("")}
     </div>`, { wide: true });
 
   $("[data-close]", m.el).addEventListener("click", m.close);
   $$(".type-card", m.el).forEach((btn) => btn.addEventListener("click", async () => {
     const spec = sourceTypes.find((t) => t.type === btn.dataset.type);
+    const needed = missingRequired(spec.type);
     m.close();
     try {
       const created = await api("/api/datasources", { method: "POST", json: {
         name: spec.label, type: spec.type, description: "", config: {} } });
       await loadSources(); loadCounts();
+      // Start the packages downloading while the user fills the form in.
+      if (needed.length && setup?.install_enabled) installPacks(needed.map((p) => p.key));
       editSource(created, spec);
     } catch (e) { toast(e.message, "fail"); }
   }));
@@ -678,5 +1170,15 @@ async function boot() {
   addMsg("bot", md(`**Console online.** Connected to your data sources, the shared board and the mailbox.\n\nAsk me anything, ${esc(me.name.split(" ")[0])} — or start with one of the shortcuts below.`));
   renderSuggestions();
   loadCounts();
+
+  // Nothing works without a Claude key — say so before the first question fails.
+  await loadSettings();
+  if (settingsCache && !settingsCache.claude_ready) {
+    const warn = addMsg("bot", `<p><strong>⚠️ No Claude API key yet.</strong> Add one and I can start
+      answering — it takes a few seconds, no files to edit.</p>
+      <p><button class="primary small" id="open-settings-cta">${icon("key")}Open settings</button></p>`);
+    warn.id = "no-key-warning";
+    $("#open-settings-cta", warn).addEventListener("click", openSettings);
+  }
 }
 boot();

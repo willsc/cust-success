@@ -4,7 +4,7 @@ Queries are restricted to read-only SELECT statements.
 """
 import re
 
-from sqlalchemy import create_engine, inspect, text
+from . import deps
 
 MAX_RESULT_ROWS = 200
 
@@ -21,11 +21,23 @@ DRIVER_HINTS = {
 }
 
 
+def _sa():
+    """SQLAlchemy, imported on first use so the app boots without the SQL pack."""
+    deps.require("sql")
+    import sqlalchemy
+
+    return sqlalchemy
+
+
 def _engine(config: dict):
     url = (config.get("url") or "").strip()
     if not url:
         raise ValueError("This SQL data source has no connection URL configured.")
-    return create_engine(url, pool_pre_ping=True, connect_args={})
+    sa = _sa()
+    driver_pack = deps.pack_for_url(url)
+    if driver_pack and not deps.is_installed(driver_pack):
+        raise deps.MissingDependency(driver_pack)
+    return sa.create_engine(url, pool_pre_ping=True, connect_args={})
 
 
 def guard(sql: str) -> str:
@@ -40,11 +52,12 @@ def guard(sql: str) -> str:
 
 
 def test_connection(config: dict) -> dict:
+    sa = _sa()
     engine = _engine(config)
     try:
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        insp = inspect(engine)
+            conn.execute(sa.text("SELECT 1"))
+        insp = sa.inspect(engine)
         schema = config.get("schema") or None
         tables = insp.get_table_names(schema=schema)
         return {"ok": True, "message": f"Connected. {len(tables)} table(s) visible.",
@@ -55,9 +68,10 @@ def test_connection(config: dict) -> dict:
 
 def describe(config: dict) -> list[dict]:
     """Table + column listing so the bot knows what it can query."""
+    sa = _sa()
     engine = _engine(config)
     try:
-        insp = inspect(engine)
+        insp = sa.inspect(engine)
         schema = config.get("schema") or None
         allow = {t.strip() for t in (config.get("tables") or "").split(",") if t.strip()}
         out = []
@@ -73,10 +87,11 @@ def describe(config: dict) -> list[dict]:
 
 def run_sql(config: dict, sql: str) -> dict:
     statement = guard(sql)
+    sa = _sa()
     engine = _engine(config)
     try:
         with engine.connect() as conn:
-            result = conn.execute(text(statement))
+            result = conn.execute(sa.text(statement))
             rows = result.fetchmany(MAX_RESULT_ROWS + 1)
             columns = list(result.keys())
     finally:

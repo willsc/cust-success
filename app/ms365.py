@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from . import config
+from . import settings
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 
@@ -37,13 +37,13 @@ DEMO_SENT: list[dict] = []
 
 
 def _settings(source_config: dict | None = None) -> dict:
-    """Per-source credentials, falling back to the MS_* environment variables."""
+    """Per-source credentials, falling back to the shared MS_* values from Settings/environment."""
     cfg = source_config or {}
     return {
-        "tenant_id": cfg.get("tenant_id") or config.MS_TENANT_ID,
-        "client_id": cfg.get("client_id") or config.MS_CLIENT_ID,
-        "client_secret": cfg.get("client_secret") or config.MS_CLIENT_SECRET,
-        "mailbox": cfg.get("mailbox") or config.MS_MAILBOX,
+        "tenant_id": cfg.get("tenant_id") or settings.value("MS_TENANT_ID"),
+        "client_id": cfg.get("client_id") or settings.value("MS_CLIENT_ID"),
+        "client_secret": cfg.get("client_secret") or settings.value("MS_CLIENT_SECRET"),
+        "mailbox": cfg.get("mailbox") or settings.value("MS_MAILBOX"),
     }
 
 

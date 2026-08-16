@@ -5,11 +5,22 @@ import re
 import sqlite3
 from contextlib import contextmanager
 
-import pandas as pd
-
+from . import deps
 from .config import SHEETS_DB, UPLOAD_DIR
 
 MAX_RESULT_ROWS = 200
+
+
+def _pandas():
+    """Import pandas only when a file is actually being ingested.
+
+    Querying already-loaded tables is plain sqlite3, so the app runs — and the
+    bot answers — before the spreadsheet pack is installed.
+    """
+    deps.require("spreadsheets")
+    import pandas as pd
+
+    return pd
 
 
 @contextmanager
@@ -46,11 +57,12 @@ def ingest_file(filename: str, content: bytes, datasource_id: int | None = None)
     """Save the upload and load each sheet into its own SQLite table. Returns table summaries."""
     from . import db  # local import keeps this module importable on its own
 
+    pd = _pandas()
     path = UPLOAD_DIR / _safe_filename(filename)
     path.write_bytes(content)
 
     base = _safe_name(path.stem)
-    frames: dict[str, pd.DataFrame] = {}
+    frames = {}
     if path.suffix.lower() in (".xlsx", ".xls"):
         sheets = pd.read_excel(path, sheet_name=None)
         for sheet_name, df in sheets.items():
