@@ -1,0 +1,21 @@
+# Optional components. You do NOT need this file: the Sources tab installs each
+# component on demand, one click, no restart. It's here for offline machines and
+# for pre-baking an image with everything ready.
+#
+# Mirrors PACKS in app/deps.py — keep the two in step.
+#
+#   pip install -r requirements-optional.txt
+
+# "spreadsheets" — CSV/Excel uploads
+pandas
+openpyxl
+
+# "sql" — external SQL databases
+sqlalchemy
+
+# "sql_postgres" / "sql_mysql" — drivers for those connection URLs
+psycopg2-binary
+pymysql
+
+# "decks" — .pptx generation
+python-pptx

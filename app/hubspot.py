@@ -1,7 +1,7 @@
 """HubSpot CRM access via a private-app token, with built-in demo data when unconfigured."""
 import httpx
 
-from . import config
+from . import settings
 
 BASE = "https://api.hubapi.com"
 
@@ -47,10 +47,10 @@ DEMO_DATA = {
 
 
 def _token(source_config: dict | None = None) -> str:
-    """Per-source token, falling back to the HUBSPOT_TOKEN environment variable."""
+    """Per-source token, falling back to the shared one from Settings/environment."""
     if source_config and source_config.get("token"):
         return source_config["token"]
-    return config.HUBSPOT_TOKEN
+    return settings.value("HUBSPOT_TOKEN")
 
 
 def configured(source_config: dict | None = None) -> bool:

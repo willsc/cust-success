@@ -1,11 +1,10 @@
+# Base install — kept small so the first run is quick on any machine.
+# Everything heavier (spreadsheets, SQL databases, .pptx decks) is an optional
+# component installed from the UI's Sources tab; see app/deps.py and
+# requirements-optional.txt.
 fastapi
 uvicorn
 anthropic
 httpx
-pandas
-openpyxl
-python-pptx
 python-multipart
-sqlalchemy
-psycopg2-binary
-pymysql
+tzdata          # Windows has no system tz database; the SLA clock needs Europe/London

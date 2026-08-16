@@ -4,11 +4,52 @@ import json
 
 import anthropic
 
-from . import config, datasources, db, reports
-
-client = anthropic.Anthropic()
+from . import datasources, db, reports, settings, tickets
 
 MAX_TURNS = 15
+
+_client_cache: tuple[str, anthropic.Anthropic] | None = None
+
+
+def client() -> anthropic.Anthropic:
+    """Built from the current API key, rebuilt when Settings changes it.
+
+    With no key configured we still hand back a default client: the SDK can pick
+    up an `ant auth login` session or ANTHROPIC_AUTH_TOKEN on its own.
+    """
+    global _client_cache
+    key = settings.value("ANTHROPIC_API_KEY")
+    if _client_cache is None or _client_cache[0] != key:
+        _client_cache = (key, anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic())
+    return _client_cache[1]
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """The SDK raises a bare TypeError when it can't resolve any credentials at all."""
+    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        return True
+    return isinstance(exc, TypeError) and "authentication" in str(exc).lower()
+
+
+def _auth_hint() -> str:
+    """What to tell the user when Claude won't authenticate."""
+    if settings.value("ANTHROPIC_API_KEY"):
+        return "Claude rejected the API key. Open Settings (the gear in the top bar) to fix it."
+    return "No Claude API key is configured. Open Settings (the gear in the top bar) to add one."
+
+
+def test_connection() -> dict:
+    """Cheapest possible round trip, so Settings can verify a key before you rely on it."""
+    model = settings.value("CLAUDE_MODEL")
+    try:
+        client().messages.create(model=model, max_tokens=4,
+                                 messages=[{"role": "user", "content": "ping"}])
+        return {"ok": True, "message": f"Claude answered — {model} is reachable."}
+    except anthropic.NotFoundError:
+        return {"ok": False, "message": f"No such model: {model}."}
+    except Exception as exc:
+        return {"ok": False, "message": _auth_hint() if _is_auth_error(exc) else str(exc)[:400]}
+
 
 SYSTEM_PROMPT = """You are a customer-success assistant for a team of customer success managers.
 The team configures its own data sources, so what you can reach changes over time. Sources may include
@@ -28,6 +69,15 @@ Guidelines:
 - When asked for a report or presentation, gather the data first, then generate the artifact and
   share its link with the user.
 - REST API sources are read-only unless the team enabled writes; check before attempting a write.
+- Tickets need routing before they are useful: every new ticket needs an owning queue, a request type
+  valid for that queue, the CSM raising it, and the customer_id from the tracker. Ask the user for
+  anything you cannot infer rather than guessing a queue - misrouting is worse than one question.
+- Tickets commit themselves back to HubSpot when a HubSpot source is connected, and are kept in the
+  local board and spreadsheet either way. Each ticket carries sync_state and hubspot_id - report a
+  sync_state of "error" to the user rather than silently retrying.
+- Never set response/resolution due dates by hand; they are computed on a UK business-hours clock.
+  Set waiting_on when a ticket is blocked on the customer or a third party - that pauses the SLA clock -
+  and clear it the moment they reply.
 - If a source you need is missing or misconfigured, say so plainly and tell the user to add it on the
   Data Sources tab - do not guess at the data.
 - Keep responses focused, brief, and concise. Lead with the answer.
@@ -121,34 +171,60 @@ TOOLS = [
         },
     },
     {
+        "name": "ticket_fields",
+        "description": "The ticket taxonomy: every queue with the request types it accepts, the "
+                       "waiting-on options, and the SLA targets. Call this before creating a ticket "
+                       "if you are unsure which request type belongs to a queue.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "list_tickets",
-        "description": "List support tickets in the internal ticketing system, optionally filtered by status or assignee.",
+        "description": "List support tickets in the internal ticketing system, optionally filtered by "
+                       "status, assignee, owning queue, or SLA breach. Each ticket includes its SLA "
+                       "state: due dates, whether the clock is paused, and breach flags.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["open", "in_progress", "waiting", "closed"]},
                 "assignee": {"type": "string"},
+                "queue": {"type": "string", "enum": tickets.QUEUES},
+                "breached": {"type": "boolean", "description": "Only tickets that have breached a target."},
             },
         },
     },
     {
         "name": "create_ticket",
-        "description": "Create a support ticket in the internal ticketing system.",
+        "description": "Create a support ticket. queue, request_type, raised_by and customer_id are "
+                       "required — they drive routing, the notify-back step and the join to the customer "
+                       "tracker. request_type must be one the queue accepts (see ticket_fields). "
+                       "Response and resolution due dates are set automatically from the priority, on a "
+                       "UK business-hours clock; do not invent them.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "customer": {"type": "string", "description": "Customer/company the ticket is about."},
+                "customer_id": {"type": "string",
+                                "description": "Join key to the customer tracker (customer_id_uk_public)."},
+                "queue": {"type": "string", "enum": tickets.QUEUES,
+                          "description": "Owning team the ticket routes to."},
+                "request_type": {"type": "string", "enum": tickets.REQUEST_TYPES,
+                                 "description": "Must be valid for the chosen queue."},
+                "raised_by": {"type": "string",
+                              "description": "The CSM raising it. Defaults to the signed-in user."},
                 "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
                 "assignee": {"type": "string", "description": "Team member name; omit to leave unassigned."},
+                "waiting_on": {"type": "string", "enum": tickets.WAITING_ON},
             },
-            "required": ["title"],
+            "required": ["title", "queue", "request_type", "customer_id"],
         },
     },
     {
         "name": "update_ticket",
-        "description": "Update fields on an existing ticket (status, priority, assignee, title, description, customer).",
+        "description": "Update fields on an existing ticket. Setting waiting_on pauses the SLA clock; "
+                       "clearing it resumes and pushes the deadlines out by the time waited. Changing "
+                       "priority or queue retargets the deadlines.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -159,6 +235,12 @@ TOOLS = [
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "customer": {"type": "string"},
+                "customer_id": {"type": "string"},
+                "queue": {"type": "string", "enum": tickets.QUEUES},
+                "request_type": {"type": "string", "enum": tickets.REQUEST_TYPES},
+                "raised_by": {"type": "string"},
+                "waiting_on": {"type": "string", "enum": tickets.WAITING_ON + [""],
+                               "description": "Blank resumes the clock."},
             },
             "required": ["ticket_id"],
         },
@@ -233,11 +315,17 @@ def _execute_tool(name: str, args: dict, user: dict) -> str:
         return json.dumps(datasources.call_api(
             args["path"], args.get("method", "GET"), args.get("params"), args.get("body"), args.get("source_id")))
     if name == "list_tickets":
-        return json.dumps(db.list_tickets(args.get("status"), args.get("assignee")))
+        return json.dumps(db.list_tickets(args.get("status"), args.get("assignee"),
+                                          args.get("queue"), args.get("breached")))
+    if name == "ticket_fields":
+        return json.dumps(tickets.field_catalog())
     if name == "create_ticket":
         return json.dumps(db.create_ticket(
             title=args["title"], description=args.get("description", ""), customer=args.get("customer", ""),
-            priority=args.get("priority", "medium"), assignee=args.get("assignee", ""), created_by=author))
+            priority=args.get("priority", "medium"), assignee=args.get("assignee", ""), created_by=author,
+            queue=args.get("queue", ""), request_type=args.get("request_type", ""),
+            raised_by=args.get("raised_by") or author, customer_id=args.get("customer_id", ""),
+            waiting_on=args.get("waiting_on", "")))
     if name == "update_ticket":
         ticket = db.update_ticket(args.pop("ticket_id"), **args)
         return json.dumps(ticket) if ticket else json.dumps({"error": "ticket not found"})
@@ -266,13 +354,18 @@ def chat(user: dict, message: str) -> dict:
     final_text = ""
 
     for _ in range(MAX_TURNS):
-        response = client.messages.create(
-            model=config.CLAUDE_MODEL,
-            max_tokens=8000,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            tools=TOOLS,
-            messages=messages,
-        )
+        try:
+            response = client().messages.create(
+                model=settings.value("CLAUDE_MODEL"),
+                max_tokens=8000,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                tools=TOOLS,
+                messages=messages,
+            )
+        except Exception as exc:
+            if not _is_auth_error(exc):
+                raise
+            raise RuntimeError(_auth_hint()) from exc
 
         if response.stop_reason == "refusal":
             final_text = "I can't help with that request."
