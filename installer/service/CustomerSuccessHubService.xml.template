@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WinSW service definition for Customer Success Hub.
+
+  bin\service.ps1 fills in the @PLACEHOLDERS@ at install time and writes the
+  result next to this file as CustomerSuccessHubService.xml. Edit that copy (not this
+  template) and run `service.ps1 -Action restart` to change how it runs.
+-->
+<service>
+  <id>CustomerSuccessHub</id>
+  <name>Customer Success Hub</name>
+  <description>Customer success bot, ticket board and data console. Serves http://localhost:@PORT@</description>
+
+  <executable>@INSTALLDIR@\runtime\python.exe</executable>
+  <arguments>-m uvicorn app.main:app --host @HOST@ --port @PORT@</arguments>
+  <workingdirectory>@INSTALLDIR@</workingdirectory>
+
+  <!-- The app writes its databases, uploads and ticket exports here. The
+       service runs as LocalSystem, so this must be an absolute path. -->
+  <env name="CSHUB_DATA_DIR" value="@DATADIR@" />
+  <!-- Tells the Components panel that pip installs land in our private
+       runtime, not in a shared system Python. -->
+  <env name="CSHUB_PRIVATE_RUNTIME" value="1" />
+  <env name="PYTHONUNBUFFERED" value="1" />
+  <env name="PYTHONIOENCODING" value="utf-8" />
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+
+  <!-- Come back up on its own if the server dies. -->
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <resetfailure>1 hour</resetfailure>
+
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+
+  <stoptimeout>15 sec</stoptimeout>
+</service>

@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 data/
+installer/.build/
+installer/dist/

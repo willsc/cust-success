@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 from itertools import count
+from pathlib import Path
 
 # key -> what it unlocks and what pip needs to install for it.
 PACKS = {
@@ -86,6 +87,19 @@ LOG_LINES = 300
 def install_enabled() -> bool:
     """One-click installs can be switched off on a locked-down server."""
     return os.getenv("DISABLE_UI_INSTALL", "").strip().lower() not in ("1", "true", "yes")
+
+
+def isolated_runtime() -> bool:
+    """True when pip installs land in a runtime that belongs to this app alone.
+
+    That's a virtual environment, or the private Python the Windows installer
+    ships (which is not a venv but is just as isolated).
+    """
+    if sys.prefix != sys.base_prefix:
+        return True
+    if os.getenv("CSHUB_PRIVATE_RUNTIME", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return (Path(sys.executable).parent / ".private-runtime").exists()
 
 
 class MissingDependency(RuntimeError):
@@ -155,7 +169,7 @@ def overview() -> dict:
     """Everything the Sources tab needs to render install prompts."""
     return {
         "install_enabled": install_enabled(),
-        "in_venv": sys.prefix != sys.base_prefix,
+        "isolated": isolated_runtime(),
         "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "packs": [_pack_status(k) for k in PACKS],
         "types": {t: type_status(t) for t in TYPE_PACKS},

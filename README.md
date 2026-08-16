@@ -94,9 +94,22 @@ Add an entry to `TYPES` in `app/datasources.py` (label, icon, and its config fie
 
 ## Quick start
 
-### Windows 11
+### Windows 11 — installer
 
-Install [Python 3.10+](https://www.python.org/downloads/) — tick **"Add python.exe to PATH"** during setup — then **double-click `run.bat`**.
+Run **`CustomerSuccessHub-<version>-setup.exe`** and click through it. Nothing else is needed: Python comes bundled, and the app installs per-user so **no administrator rights are required**.
+
+- Installs to `%LOCALAPPDATA%\Programs\Customer Success Hub`; data (databases, uploads, ticket exports) goes in `%LOCALAPPDATA%\CustomerSuccessHub`, and the wizard lets you change the port, the data folder, and whether it listens beyond this machine.
+- Tick **Run as a Windows service** and it registers *Customer Success Hub* in `services.msc`, starting with the machine and restarting itself if it dies. That single step asks for administrator; everything else doesn't.
+- Start Menu gets *Customer Success Hub* (opens the browser, starting the server first if needed), *Run in this window*, and a shortcut to the data folder.
+- Uninstall from Apps & Features. It removes the service and firewall rule and **leaves your data folder alone** — reinstalling over the top upgrades in place and keeps everything.
+
+The bundled runtime has its own pip, so the Components panel still installs spreadsheets, SQL drivers and decks on demand.
+
+Don't have the installer? Build it: [`installer/README.md`](installer/README.md), or run the **Windows installer** workflow in the Actions tab. It's unsigned, so SmartScreen warns on first run — *More info → Run anyway*, or sign it with your own certificate.
+
+### Windows 11 — from source
+
+For development, or if you'd rather not install: get [Python 3.10+](https://www.python.org/downloads/) — tick **"Add python.exe to PATH"** — then **double-click `run.bat`**.
 
 Or from PowerShell:
 
@@ -193,8 +206,9 @@ Settings are stored in `data/app.db` (gitignored) in plain text, like the per-so
 ## Architecture
 
 ```
-run.bat / run.ps1  Windows launchers
+run.bat / run.ps1  Windows launchers (from source)
 run.sh             macOS / Linux launcher
+installer/         Windows installer: bundled runtime, service, Inno Setup script
 requirements.txt   Base install (small); requirements-optional.txt has the rest
 app/
   main.py          FastAPI: auth, chat, tickets, data sources, artifacts, static UI
@@ -214,6 +228,7 @@ app/
   reports.py       HTML report + python-pptx presentation generation
   static/          Web UI (vanilla JS, no build step)
 data/              SQLite DBs, uploads, generated artifacts, ticket exports (gitignored)
+                   — set CSHUB_DATA_DIR to put this somewhere else, as the installer does
 ```
 
 Notes:

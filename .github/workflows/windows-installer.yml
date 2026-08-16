@@ -1,0 +1,62 @@
+name: Windows installer
+
+# Builds Setup.exe on a real Windows runner and attaches it to the run.
+# Manual by default; tagging v* also builds and publishes it to the release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version stamped into the installer"
+        default: "1.0.0"
+      include_optional:
+        description: "Bundle the optional components (pandas, SQLAlchemy, drivers, python-pptx)"
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          if (-not $version) { $version = "${{ github.ref_name }}" -replace '^v', '' }
+          if (-not $version) { $version = "1.0.0" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $args = @("-Version", "${{ steps.version.outputs.version }}")
+          if ("${{ inputs.include_optional }}" -eq "true") { $args += "-IncludeOptional" }
+          .\installer\build.ps1 @args
+
+      - name: Smoke-test the payload
+        shell: pwsh
+        run: |
+          # The staged runtime must be able to import the app and report itself
+          # as a private runtime before we ship it.
+          $py = ".\installer\.build\payload\runtime\python.exe"
+          & $py -c "from app import main, deps; assert deps.isolated_runtime(); print('payload OK')"
+          if ($LASTEXITCODE -ne 0) { throw "payload smoke test failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CustomerSuccessHub-${{ steps.version.outputs.version }}-setup
+          path: installer/dist/*.exe
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/dist/*.exe

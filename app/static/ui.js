@@ -818,8 +818,9 @@ function renderSetupPanel() {
     </div>
     ${setup.install_enabled ? "" : `<p class="muted">One-click install is disabled on this server — run the
       commands below in the app folder instead.</p>`}
-    ${!setup.in_venv && setup.install_enabled ? `<p class="muted">⚠️ Not running inside a virtual environment —
-      packages install into the system Python (${esc(setup.python)}).</p>` : ""}
+    ${!setup.isolated && setup.install_enabled ? `<p class="muted">⚠️ This server isn't running from a private
+      Python — components install into the system Python ${esc(setup.python)}, alongside everything else on
+      this machine.</p>` : ""}
     <div class="pack-list">${shown.map((p) => packRow(p, job)).join("")}</div>
     ${job && (running || job.state === "failed") ? `
       <div class="install-status ${job.state}">
