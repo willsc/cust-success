@@ -72,6 +72,12 @@ Say "Cleaning $build"
 if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $payload, $runtime, $cache | Out-Null
 
+# A mis-bound parameter used to land the app version here and 404 on a Python
+# release that never existed. Say so plainly instead.
+if ($PythonVersion -notmatch '^3\.\d+\.\d+$') {
+    throw "-PythonVersion must look like 3.12.10, got '$PythonVersion'. (Splat named arguments with a hashtable: .\build.ps1 @{ Version = '1.0.0' })"
+}
+
 Say "Fetching the embeddable Python runtime ($PythonVersion)"
 $embedZip = Get-Cached "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip" `
                        "python-$PythonVersion-embed-amd64.zip"

@@ -36,9 +36,12 @@ jobs:
       - name: Build the installer
         shell: pwsh
         run: |
-          $args = @("-Version", "${{ steps.version.outputs.version }}")
-          if ("${{ inputs.include_optional }}" -eq "true") { $args += "-IncludeOptional" }
-          .\installer\build.ps1 @args
+          # Hashtable splatting, not array: an array splat binds positionally, so
+          # "-Version", "1.0.0" landed in -Version and -PythonVersion. And $args
+          # is an automatic variable — don't reuse the name.
+          $buildArgs = @{ Version = "${{ steps.version.outputs.version }}" }
+          if ("${{ inputs.include_optional }}" -eq "true") { $buildArgs.IncludeOptional = $true }
+          .\installer\build.ps1 @buildArgs
 
       - name: Smoke-test the payload
         shell: pwsh
