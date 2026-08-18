@@ -5,6 +5,10 @@ environment (including anything loaded from a `.env` file), then the default
 below. So `.env` still works for people who like it, but nobody has to open a
 text editor and restart the server to change a key.
 
+The model provider fields (LLM_*) decide which LLM answers questions; `llm.py`
+reads them. ANTHROPIC_API_KEY and CLAUDE_MODEL are kept from before this app
+supported more than Claude, so upgrades keep working untouched.
+
 Values live in the `settings` table of data/app.db, next to the per-source
 credentials the Sources tab already stores. Secrets never travel back to the
 browser: the API returns MASK for anything marked secret, and MASK coming back
@@ -19,9 +23,11 @@ MASK = "••••••••"
 
 # group -> what the group is for; rendered as sections in the Settings dialog.
 GROUPS = {
-    "claude": {
-        "label": "Claude",
-        "blurb": "Powers the chat bot. Without a key the console can't answer anything.",
+    "model": {
+        "label": "Model provider",
+        "blurb": "Which LLM answers questions. Claude, OpenAI, Gemini, any OpenAI-compatible "
+                 "endpoint, or an open-source model running on this machine under Ollama. "
+                 "Until one is configured the console can't answer anything.",
     },
     "shared": {
         "label": "Shared credentials",
@@ -30,16 +36,61 @@ GROUPS = {
     },
 }
 
+# Kept in step with llm.PROVIDERS by hand — settings can't import llm (llm imports
+# settings), and these are only the labels the picker shows.
+PROVIDER_OPTIONS = [
+    {"value": "anthropic", "label": "Claude (Anthropic)"},
+    {"value": "openai", "label": "OpenAI"},
+    {"value": "google", "label": "Google Gemini"},
+    {"value": "ollama", "label": "Ollama — local open-source models"},
+    {"value": "openai_compatible", "label": "OpenAI-compatible endpoint"},
+]
+
 FIELDS = [
     {
-        "key": "ANTHROPIC_API_KEY", "group": "claude", "label": "Claude API key",
-        "kind": "password", "secret": True, "placeholder": "sk-ant-…",
-        "help": "console.anthropic.com → API keys. Leave blank to fall back to the "
-                "ANTHROPIC_API_KEY environment variable or an `ant auth login` session.",
+        "key": "LLM_PROVIDER", "group": "model", "label": "Provider",
+        "kind": "select", "options": PROVIDER_OPTIONS, "default": "anthropic",
+        "help": "Pick Ollama to run an open-source model (Qwen3, Llama, Mistral) on this machine "
+                "with no API key and no data leaving it. Pick OpenAI-compatible for Azure OpenAI, "
+                "vLLM, LM Studio, llama.cpp, Groq, Together, OpenRouter, DeepSeek or a private gateway.",
     },
     {
-        "key": "CLAUDE_MODEL", "group": "claude", "label": "Model",
-        "kind": "text", "default": "claude-opus-5", "placeholder": "claude-opus-5",
+        "key": "LLM_MODEL", "group": "model", "label": "Model",
+        "kind": "text", "placeholder": "claude-opus-5 · gpt-4o · gemini-2.5-pro · qwen3:8b",
+        "help": "Leave blank for the provider's default. Use List models to ask the endpoint "
+                "what it actually serves.",
+    },
+    {
+        "key": "ANTHROPIC_API_KEY", "group": "model", "label": "Claude API key",
+        "kind": "password", "secret": True, "placeholder": "sk-ant-…",
+        "help": "Only used when the provider is Claude. console.anthropic.com → API keys. Leave blank "
+                "to fall back to the ANTHROPIC_API_KEY environment variable or an `ant auth login` session.",
+    },
+    {
+        "key": "LLM_API_KEY", "group": "model", "label": "API key (other providers)",
+        "kind": "password", "secret": True,
+        "help": "The key for OpenAI, Gemini or your own endpoint. Leave blank for a local Ollama — "
+                "it doesn't use one.",
+    },
+    {
+        "key": "LLM_BASE_URL", "group": "model", "label": "Base URL",
+        "kind": "text", "placeholder": "http://localhost:11434",
+        "help": "Only needed for Ollama (default http://localhost:11434) and OpenAI-compatible "
+                "endpoints — e.g. http://localhost:8000/v1 for vLLM, or the full Azure OpenAI "
+                "…/openai/deployments/<deployment>/chat/completions?api-version=… URL.",
+    },
+    {
+        "key": "LLM_TOOL_MODE", "group": "model", "label": "Tool calling",
+        "kind": "select", "options": ["auto", "native", "prompted"], "default": "auto",
+        "help": "The bot works by calling tools. auto — use the endpoint's native tool calling and "
+                "fall back to the prompted JSON protocol if it refuses. native — require it. "
+                "prompted — always use the JSON protocol, for small local models with no tool support.",
+    },
+    {
+        "key": "LLM_TIMEOUT", "group": "model", "label": "Request timeout (seconds)",
+        "kind": "text", "default": "600", "placeholder": "600",
+        "help": "A small model on a CPU-only machine can take minutes to answer. Raise this if "
+                "local replies are being cut off.",
     },
     {
         "key": "HUBSPOT_TOKEN", "group": "shared", "label": "HubSpot private app token",
@@ -104,9 +155,11 @@ def source_of(key: str) -> str:
     return "default" if BY_KEY.get(key, {}).get("default") else "unset"
 
 
-def claude_ready() -> bool:
-    """A key is configured somewhere — the bot has a fair chance of working."""
-    return bool(value("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+def llm_ready() -> bool:
+    """The configured provider has what it needs — the bot has a fair chance of working."""
+    from . import llm   # imported here: llm reads this module at import time
+
+    return llm.configured()
 
 
 def public() -> dict:
@@ -126,10 +179,14 @@ def public() -> dict:
             "updated_by": meta.get(key, {}).get("updated_by", ""),
             "updated_at": meta.get(key, {}).get("updated_at", ""),
         })
+    from . import llm   # imported here: llm reads this module at import time
+
     return {
         "groups": [{"key": k, **v} for k, v in GROUPS.items()],
         "fields": fields,
-        "claude_ready": claude_ready(),
+        "llm_ready": llm.configured(),
+        "llm": llm.describe(),
+        "providers": llm.catalog(),
     }
 
 

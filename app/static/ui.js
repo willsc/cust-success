@@ -622,10 +622,12 @@ function settingFieldHtml(field) {
   const chip = SOURCE_CHIP[field.source] || SOURCE_CHIP.unset;
   const type = field.kind === "password" ? "password" : "text";
   const by = field.updated_by ? ` · by ${esc(field.updated_by)}` : "";
+  const opt = (o) => (typeof o === "string" ? { value: o, label: o } : o);
+  const list = field.key === "LLM_MODEL" ? ` list="model-suggestions"` : "";
   const control = field.kind === "select"
-    ? `<select id="s-${field.key}">${(field.options || []).map((o) =>
-        `<option ${o === field.value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
-    : `<input id="s-${field.key}" type="${type}" value="${esc(field.value)}"
+    ? `<select id="s-${field.key}">${(field.options || []).map(opt).map((o) =>
+        `<option value="${esc(o.value)}" ${o.value === field.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>`
+    : `<input id="s-${field.key}" type="${type}" value="${esc(field.value)}"${list}
         placeholder="${esc(field.placeholder || "")}" autocomplete="off" spellcheck="false">`;
   return `
     <label class="set-label">
@@ -668,6 +670,9 @@ async function openSettings() {
       <button class="icon-btn" data-close>${icon("close")}</button></div>
     <p class="muted">Keys and credentials are stored on the server and take effect immediately.
       Anything left blank falls back to an environment variable of the same name, then to the default.</p>
+    ${data.llm ? `<p class="muted">Answering with <strong>${esc(data.llm.label)}</strong> —
+      <code>${esc(data.llm.model || "no model set")}</code>${data.llm.base_url
+        ? ` at <code>${esc(data.llm.base_url)}</code>` : ""}.</p>` : ""}
     ${data.groups.map((g) => `
       <section class="set-group">
         <h3>${esc(g.label)}</h3>
@@ -675,8 +680,10 @@ async function openSettings() {
         ${data.fields.filter((f) => f.group === g.key).map(settingFieldHtml).join("")}
       </section>`).join("")}
     ${holidaySectionHtml()}
+    <datalist id="model-suggestions"></datalist>
     <div class="modal-foot">
-      <button class="ghost spacer" id="set-test">Test Claude key</button>
+      <button class="ghost spacer" id="set-models">List models</button>
+      <button class="ghost" id="set-test">Test model connection</button>
       <button class="ghost" data-close>Cancel</button>
       <button class="primary" id="set-save">Save</button>
     </div>`, { wide: true });
@@ -695,10 +702,23 @@ async function openSettings() {
     e.target.disabled = true; e.target.textContent = "Testing…";
     try {
       await save();   // test what's on screen, not what was there before
-      const r = await api("/api/settings/test-claude", { method: "POST" });
+      const r = await api("/api/settings/test-llm", { method: "POST" });
       toast(r.message, r.ok ? "ok" : "fail");
     } catch (err) { toast(err.message, "fail"); }
-    finally { e.target.disabled = false; e.target.textContent = "Test Claude key"; }
+    finally { e.target.disabled = false; e.target.textContent = "Test model connection"; }
+  });
+
+  // Ask the endpoint what it serves — the fastest way to get a local model name right.
+  $("#set-models", m.el).addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Asking…";
+    try {
+      await save();   // ask the provider that's on screen
+      const r = await api("/api/settings/llm-models");
+      $("#model-suggestions", m.el).innerHTML =
+        (r.models || []).map((n) => `<option value="${esc(n)}">`).join("");
+      toast(r.ok ? `${r.message} Click the Model box to pick one.` : r.message, r.ok ? "ok" : "fail");
+    } catch (err) { toast(err.message, "fail"); }
+    finally { e.target.disabled = false; e.target.textContent = "List models"; }
   });
 
   $("#set-holidays", m.el)?.addEventListener("click", async (e) => {
@@ -1172,11 +1192,12 @@ async function boot() {
   renderSuggestions();
   loadCounts();
 
-  // Nothing works without a Claude key — say so before the first question fails.
+  // Nothing works without a model behind it — say so before the first question fails.
   await loadSettings();
-  if (settingsCache && !settingsCache.claude_ready) {
-    const warn = addMsg("bot", `<p><strong>⚠️ No Claude API key yet.</strong> Add one and I can start
-      answering — it takes a few seconds, no files to edit.</p>
+  if (settingsCache && !settingsCache.llm_ready) {
+    const warn = addMsg("bot", `<p><strong>⚠️ No model configured yet.</strong> Point me at one and I can
+      start answering — a Claude, OpenAI or Gemini key, or a model running locally under Ollama.
+      It takes a few seconds, no files to edit.</p>
       <p><button class="primary small" id="open-settings-cta">${icon("key")}Open settings</button></p>`);
     warn.id = "no-key-warning";
     $("#open-settings-cta", warn).addEventListener("click", openSettings);

@@ -4,7 +4,7 @@
 # requirements-optional.txt.
 fastapi
 uvicorn
-anthropic
+anthropic       # the Claude provider; every other provider rides on httpx
 httpx
 python-multipart
 tzdata          # Windows has no system tz database; the SLA clock needs Europe/London

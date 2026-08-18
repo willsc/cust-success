@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import bot, datasources, db, deps, settings, sla, spreadsheets, ticketsync, tickets
+from . import bot, datasources, db, deps, llm, settings, sla, spreadsheets, ticketsync, tickets
 from .config import ARTIFACT_DIR, BASE_DIR, EXPORT_DIR
 
 app = FastAPI(title="Customer Success Bot")
@@ -314,10 +314,20 @@ def settings_patch(body: SettingsUpdate, user: dict = Depends(current_user)):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@app.post("/api/settings/test-claude")
-def settings_test_claude(user: dict = Depends(current_user)):
-    """Round-trips the configured key and model so you know before you rely on it."""
+@app.post("/api/settings/test-llm")
+def settings_test_llm(user: dict = Depends(current_user)):
+    """Round-trips the configured provider, model and key so you know before you rely on it."""
     return bot.test_connection()
+
+
+# The old name, so a browser tab left open across the upgrade doesn't 404.
+app.post("/api/settings/test-claude")(settings_test_llm)
+
+
+@app.get("/api/settings/llm-models")
+def settings_llm_models(user: dict = Depends(current_user)):
+    """Ask the configured endpoint which models it serves, to fill in the Model box."""
+    return llm.list_models()
 
 
 # ---------- optional components ----------

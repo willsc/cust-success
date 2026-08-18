@@ -2,11 +2,13 @@
 
 A customer-success bot + ticketing system with a multi-user web UI.
 
-**The bot (Claude Opus 5) can:**
+**The bot can:**
 - Query any data source the team configures — see below
 - Create, update, and comment on **support tickets**
 - Read and **reply to Microsoft 365 mail** (drafts are approved by you in chat before sending)
 - Generate **reports** (HTML) and **presentations** (.pptx) from the data
+
+It runs on whichever model you point it at — Claude, OpenAI, Gemini, any OpenAI-compatible endpoint, or an open-source model running on your own machine under Ollama (see [Choosing a model](#choosing-a-model)).
 
 **The UI:** Chat, a drag-and-drop ticket board shared by the team, a Data Sources manager, and a Reports library. Light and dark themes; works on phones.
 
@@ -136,7 +138,7 @@ chmod +x run.sh
 
 ### Optional components — installed from the UI
 
-The base install is only the web server and the Claude SDK. The heavier pieces are installed **from the Sources tab, one click, when you first need them** — no terminal, no restart, and a machine that never touches spreadsheets never downloads pandas.
+The base install is only the web server, the Claude SDK and `httpx` (which is all the other model providers need). The heavier pieces are installed **from the Sources tab, one click, when you first need them** — no terminal, no restart, and a machine that never touches spreadsheets never downloads pandas.
 
 | Component | Installs | Needed for |
 |---|---|---|
@@ -169,13 +171,18 @@ $env:HOST="0.0.0.0"; .\run.ps1
 
 | Setting | Purpose |
 |---|---|
-| **Claude API key** | Required for the chat bot. [console.anthropic.com](https://console.anthropic.com) → API keys |
-| **Model** | Defaults to `claude-opus-5` |
+| **Provider** | Which LLM answers — Claude, OpenAI, Gemini, Ollama, or any OpenAI-compatible endpoint. See [Choosing a model](#choosing-a-model) |
+| **Model** | Blank uses the provider's default (`claude-opus-5`, `gpt-4o`, `gemini-2.5-pro`, `qwen3:8b`). **List models** asks the endpoint what it actually serves |
+| **Claude API key** | Used when the provider is Claude. [console.anthropic.com](https://console.anthropic.com) → API keys |
+| **API key (other providers)** | OpenAI, Gemini, or your own endpoint. A local Ollama needs none |
+| **Base URL** | Only for Ollama and OpenAI-compatible endpoints |
+| **Tool calling** | `auto` / `native` / `prompted` — see [Choosing a model](#choosing-a-model) |
+| **Request timeout** | Seconds to wait for a reply; raise it for slow local models |
 | **HubSpot private app token** | Fallback for HubSpot sources with no token of their own |
 | **Commit tickets to HubSpot** | `auto` / `manual` / `off` — see [Where tickets end up](#where-tickets-end-up) |
 | **Microsoft tenant / client ID / client secret / default mailbox** | Fallback Entra ID app registration (Application permissions `Mail.Read` + `Mail.Send`, admin-consented) |
 
-**Test Claude key** in that dialog does a one-token round trip, so you know the key and model work before anyone asks a question.
+**Test model connection** in that dialog does a one-token round trip, so you know the provider, key and model work before anyone asks a question.
 
 Each field shows where its current value comes from — *set here*, *from environment*, or *default*. Secrets are never sent back to the browser: you see `••••••••`, and leaving that alone keeps the stored value. Clearing a box removes the override and falls back to the environment again.
 
@@ -184,12 +191,61 @@ Data source credentials (per-source HubSpot tokens, database URLs, REST API keys
 <details>
 <summary>Prefer environment variables?</summary>
 
-Still supported, and useful for automated deployments. Copy `.env.example` to `.env` in this folder (`cp .env.example .env`, or `Copy-Item .env.example .env` in PowerShell) and fill in `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `HUBSPOT_TOKEN`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX`. Real environment variables work too, as does an `ant auth login` session for the Claude key.
+Still supported, and useful for automated deployments. Copy `.env.example` to `.env` in this folder (`cp .env.example .env`, or `Copy-Item .env.example .env` in PowerShell) and fill in `LLM_PROVIDER`, `LLM_MODEL`, `ANTHROPIC_API_KEY` / `LLM_API_KEY`, `LLM_BASE_URL`, `HUBSPOT_TOKEN`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX`. Real environment variables work too, as does an `ant auth login` session for the Claude key.
 
 Resolution order for every setting: **UI value → environment/`.env` → default.**
 </details>
 
 Settings are stored in `data/app.db` (gitignored) in plain text, like the per-source credentials the app already keeps there — that file is as sensitive as the keys in it. Anyone signed in can view field names and change values; they can never read a stored secret back.
+
+## Choosing a model
+
+The bot is provider-agnostic: `app/llm.py` translates between the app and whatever you point it at. Switch providers in **Settings → Model provider**; it takes effect on the next message, and conversation history survives the switch.
+
+| Provider | Set | Notes |
+|---|---|---|
+| **Claude (Anthropic)** | Claude API key | The default, and the best results here — this agent leans hard on tool use |
+| **OpenAI** | API key, model (`gpt-4o`, …) | Native function calling |
+| **Google Gemini** | API key, model (`gemini-2.5-pro`, …) | Native function calling |
+| **Ollama** | Base URL (default `http://localhost:11434`), model (`qwen3:8b`, …) | Open-source models on your own machine. No key, no data leaving the box |
+| **OpenAI-compatible** | Base URL, model, key if the endpoint wants one | Azure OpenAI, vLLM, LM Studio, llama.cpp, Groq, Together, OpenRouter, DeepSeek, Qwen/DashScope, a private gateway |
+
+Nothing extra to install for any of them — the base install already has the Claude SDK and `httpx`.
+
+### Running an open-source model locally (Windows)
+
+Qwen3 8B is a good starting point: it fits on a 16 GB machine, and it supports tool calling, which this bot depends on.
+
+1. Install **Ollama for Windows** from [ollama.com/download](https://ollama.com/download). It runs as a background service on `http://localhost:11434`.
+2. Pull the model in PowerShell:
+   ```powershell
+   ollama pull qwen3:8b
+   ```
+3. Start the hub (`.\run.ps1`), open the **⚙ gear**, and set:
+   - **Provider** → `Ollama — local open-source models`
+   - **Model** → `qwen3:8b` (or press **List models** and pick from what's installed)
+   - Leave both API keys blank
+4. Press **Test model connection**. Once it answers, ask the bot something.
+
+A GPU is not required, but on CPU alone expect answers to take a while — each question is several model turns, one per tool call. If replies get cut off, raise **Request timeout**.
+
+Other local runtimes work through **OpenAI-compatible**: vLLM at `http://localhost:8000/v1`, LM Studio at `http://localhost:1234/v1`, `llama-server` at `http://localhost:8080/v1`. For **Azure OpenAI**, paste the whole deployment URL as the base URL (`https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-10-21`) and put the key in **API key (other providers)** — it is sent as both `Authorization: Bearer` and `api-key`.
+
+### Tool calling, and what to expect from smaller models
+
+Every answer this bot gives comes from tools — listing data sources, running SQL, reading mail, raising tickets. That makes tool-calling ability the thing that decides whether a model is usable here, more than its size.
+
+**Tool calling** in Settings picks how the calls are made:
+
+- **auto** (default) — use the endpoint's native tool calling, and fall back to the prompted protocol the first time an endpoint says it doesn't support tools.
+- **native** — require native tool calling; fail loudly if it isn't there.
+- **prompted** — always use the prompted protocol: the tools are described in the system prompt and the model replies with a JSON block, which the app parses back into a real tool call. This is what makes models with no tool-calling support usable at all.
+
+Practical guidance:
+
+- **7–8B and up, tool-trained** (Qwen3, Llama 3.1, Mistral, Command-R) — works. Qwen3's `<think>` reasoning is stripped out of what you see.
+- **Below ~7B, or not tool-trained** — try `prompted`. Expect it to need more nudging and to sometimes pick the wrong source; keep questions specific.
+- **Any local model** — the bot's guardrails (approve email drafts before sending, never invent customer data) are system-prompt instructions. A frontier model follows them reliably; a small local one is less dependable, so watch the first few email and ticket actions before trusting it unattended.
 
 ## Example prompts
 
@@ -212,7 +268,8 @@ installer/         Windows installer: bundled runtime, service, Inno Setup scrip
 requirements.txt   Base install (small); requirements-optional.txt has the rest
 app/
   main.py          FastAPI: auth, chat, tickets, data sources, artifacts, static UI
-  bot.py           Claude Opus 5 agent loop + tool definitions
+  bot.py           Agent loop + tool definitions (provider-independent)
+  llm.py           Model providers: Claude, OpenAI, Gemini, Ollama, OpenAI-compatible
   datasources.py   Source registry: types, config, secret masking, query dispatch
   tickets.py       Ticket taxonomy: queues, dependent request types, validation
   ticketsync.py    Commits tickets to HubSpot; writes the local CSV/XLSX mirror

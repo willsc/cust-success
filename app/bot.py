@@ -1,54 +1,21 @@
-"""The customer-success bot: a Claude tool-use agent over spreadsheets, HubSpot,
-MS365 mail, the ticketing system, and report/presentation generation."""
+"""The customer-success bot: a tool-use agent over spreadsheets, HubSpot, MS365
+mail, the ticketing system, and report/presentation generation.
+
+The model behind it is whatever Settings points at — Claude, OpenAI, Gemini, an
+OpenAI-compatible endpoint, or a local open-source model under Ollama. All of
+that lives in `llm.py`; this module only describes the tools and runs the loop.
+"""
 import json
 
-import anthropic
-
-from . import datasources, db, reports, settings, tickets
+from . import datasources, db, llm, reports, tickets
 
 MAX_TURNS = 15
-
-_client_cache: tuple[str, anthropic.Anthropic] | None = None
-
-
-def client() -> anthropic.Anthropic:
-    """Built from the current API key, rebuilt when Settings changes it.
-
-    With no key configured we still hand back a default client: the SDK can pick
-    up an `ant auth login` session or ANTHROPIC_AUTH_TOKEN on its own.
-    """
-    global _client_cache
-    key = settings.value("ANTHROPIC_API_KEY")
-    if _client_cache is None or _client_cache[0] != key:
-        _client_cache = (key, anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic())
-    return _client_cache[1]
-
-
-def _is_auth_error(exc: Exception) -> bool:
-    """The SDK raises a bare TypeError when it can't resolve any credentials at all."""
-    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
-        return True
-    return isinstance(exc, TypeError) and "authentication" in str(exc).lower()
-
-
-def _auth_hint() -> str:
-    """What to tell the user when Claude won't authenticate."""
-    if settings.value("ANTHROPIC_API_KEY"):
-        return "Claude rejected the API key. Open Settings (the gear in the top bar) to fix it."
-    return "No Claude API key is configured. Open Settings (the gear in the top bar) to add one."
+MAX_TOKENS = 8000
 
 
 def test_connection() -> dict:
-    """Cheapest possible round trip, so Settings can verify a key before you rely on it."""
-    model = settings.value("CLAUDE_MODEL")
-    try:
-        client().messages.create(model=model, max_tokens=4,
-                                 messages=[{"role": "user", "content": "ping"}])
-        return {"ok": True, "message": f"Claude answered — {model} is reachable."}
-    except anthropic.NotFoundError:
-        return {"ok": False, "message": f"No such model: {model}."}
-    except Exception as exc:
-        return {"ok": False, "message": _auth_hint() if _is_auth_error(exc) else str(exc)[:400]}
+    """Cheapest possible round trip, so Settings can verify a provider before you rely on it."""
+    return llm.test_connection()
 
 
 SYSTEM_PROMPT = """You are a customer-success assistant for a team of customer success managers.
@@ -339,11 +306,6 @@ def _execute_tool(name: str, args: dict, user: dict) -> str:
     raise ValueError(f"unknown tool {name!r}")
 
 
-def _serialize_content(content) -> list:
-    """Convert response content blocks to plain dicts we can persist and resend."""
-    return [block.model_dump(exclude_none=True) for block in content]
-
-
 def chat(user: dict, message: str) -> dict:
     """Run one user turn through the agent loop. Returns the reply, tool activity, and updated history."""
     history = json.loads(db.get_conversation(user["id"]))
@@ -354,51 +316,38 @@ def chat(user: dict, message: str) -> dict:
     final_text = ""
 
     for _ in range(MAX_TURNS):
-        try:
-            response = client().messages.create(
-                model=settings.value("CLAUDE_MODEL"),
-                max_tokens=8000,
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                tools=TOOLS,
-                messages=messages,
-            )
-        except Exception as exc:
-            if not _is_auth_error(exc):
-                raise
-            raise RuntimeError(_auth_hint()) from exc
+        reply = llm.complete(system, messages, TOOLS, max_tokens=MAX_TOKENS)
 
-        if response.stop_reason == "refusal":
+        if reply.stop_reason == "refusal":
             final_text = "I can't help with that request."
             messages.append({"role": "assistant", "content": final_text})
             break
 
-        if response.stop_reason == "pause_turn":
-            messages.append({"role": "assistant", "content": _serialize_content(response.content)})
+        # An assistant turn always needs content, or the next request is invalid.
+        content = reply.content or [{"type": "text", "text": reply.text or "(no response)"}]
+        messages.append({"role": "assistant", "content": content})
+
+        if reply.stop_reason == "pause_turn":   # server-side tool paused mid-turn; resume
             continue
 
-        assistant_content = _serialize_content(response.content)
-        messages.append({"role": "assistant", "content": assistant_content})
+        if reply.text:
+            final_text = reply.text
 
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-        text_parts = [b.text for b in response.content if b.type == "text"]
-        if text_parts:
-            final_text = "\n".join(text_parts)
-
-        if response.stop_reason != "tool_use" or not tool_uses:
+        if not reply.tool_calls:
             break
 
         results = []
-        for tool in tool_uses:
+        for call in reply.tool_calls:
             try:
-                output = _execute_tool(tool.name, dict(tool.input), user)
+                output = _execute_tool(call["name"], dict(call["input"]), user)
                 is_error = False
             except Exception as exc:  # surface tool failures back to the model
                 output = f"Error: {exc}"
                 is_error = True
-            tool_events.append({"tool": tool.name, "input": tool.input, "ok": not is_error})
+            tool_events.append({"tool": call["name"], "input": call["input"], "ok": not is_error})
             results.append({
                 "type": "tool_result",
-                "tool_use_id": tool.id,
+                "tool_use_id": call["id"],
                 "content": output,
                 "is_error": is_error,
             })
