@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import settings
+from . import oauth, settings
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 
@@ -100,7 +100,15 @@ def _settings(source_config: dict | None = None) -> dict:
     }
 
 
+def signed_in(source_config: dict | None = None) -> bool:
+    """The user connected this source by signing in, rather than pasting a secret."""
+    return oauth.connected(source_config)
+
+
 def configured(source_config: dict | None = None) -> bool:
+    """True when this source can reach real mail, either way round."""
+    if signed_in(source_config):
+        return True
     s = _settings(source_config)
     return all([s["tenant_id"], s["client_id"], s["client_secret"], s["mailbox"]])
 
@@ -110,11 +118,18 @@ def configured(source_config: dict | None = None) -> bool:
 def allowlist(source_config: dict | None = None) -> list[str]:
     """The mailboxes this source may touch: primary first, then the extras field.
 
-    An empty list means "not restricted here" — the app registration's own grant
-    (and any Exchange application access policy on it) is then the only limit.
+    An empty list means "not restricted here" — the grant behind the source is
+    then the only limit: for a signed-in user, the mailboxes they personally have
+    rights to; for an app registration, whatever its application permissions and
+    any Exchange application access policy allow.
+
+    Signing in also supplies the default mailbox, so nobody has to type their own
+    address into a box the app could already have asked Microsoft for.
     """
     s = _settings(source_config)
-    entries = ([s["mailbox"]] if s["mailbox"] else []) + _split(s["mailboxes"])
+    account = oauth.account_of(source_config)
+    entries = ([s["mailbox"]] if s["mailbox"] else []) + ([account] if account else [])
+    entries += _split(s["mailboxes"])
     return list(dict.fromkeys(e.strip().lower() for e in entries if e.strip()))
 
 
@@ -193,21 +208,29 @@ def list_mailboxes(source_config: dict | None = None) -> dict:
 
 def test_connection(source_config: dict) -> dict:
     if not configured(source_config):
-        return {"ok": False, "message": "Credentials incomplete — the bot will use the demo inbox."}
+        return {"ok": False,
+                "message": "Not connected yet — click Connect to sign in, or fill in the "
+                           "Advanced fields. Until then the bot uses the demo inbox."}
     boxes = allowlist(source_config)
     try:
         for box in boxes:
             list_messages(limit=1, mailbox=box, source_config=source_config)
     except Exception as exc:
         return {"ok": False, "message": str(exc)}
+    who = oauth.account_of(source_config)
+    signed = f" as {who}" if who else ""
     if len(boxes) > 1:
-        return {"ok": True, "message": f"Connected to {len(boxes)} mailboxes: {', '.join(boxes)}."}
-    return {"ok": True, "message": f"Connected to {boxes[0]}."}
+        return {"ok": True, "message": f"Connected{signed} to {len(boxes)} mailboxes: {', '.join(boxes)}."}
+    return {"ok": True, "message": f"Connected{signed} to {boxes[0]}."}
 
 
 # ---------- auth ----------
 
 def _token(source_config: dict | None = None) -> str:
+    """A bearer token: the signed-in user's if there is one, else client credentials."""
+    if oauth.connected(source_config):
+        return oauth.ms_access_token(source_config)
+
     s = _settings(source_config)
     cache_key = f"{s['tenant_id']}:{s['client_id']}"
     cached = _token_cache.get(cache_key)

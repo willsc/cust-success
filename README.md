@@ -82,6 +82,24 @@ Everything the bot can reach is configured in the UI — nothing is hard-coded. 
 
 You can add **several of the same type** (two spreadsheet sets, a prod and a staging database) and the bot picks between them.
 
+### Connecting HubSpot and Microsoft 365
+
+Both are connected by **signing in**, not by pasting a secret. The source card shows a **Connect** button; the user signs in on Microsoft's or HubSpot's own page and comes back connected, and the card then says who as. Nobody types a password into this app, and no client secret has to be handed round a team.
+
+- **Microsoft 365** uses the device-code flow: a short code to enter at `microsoft.com/devicelogin`. No redirect URL to register, so it behaves the same on localhost, a LAN address or behind the Windows service.
+- **HubSpot** uses the standard redirect flow, because HubSpot offers nothing else. The redirect URL to register is shown in the source's dialog, already matching the address you reached the app on.
+
+Each still needs a **one-time app registration** by whoever set the app up — that is what OAuth requires, and it is the only part that cannot be removed:
+
+| | What to register once |
+|---|---|
+| Microsoft 365 | An Entra ID app registration with **Allow public client flows** on, and *delegated* Graph permissions: `Mail.Read`, `Mail.Send`, `Calendars.Read`, plus the `.Shared` variants to reach shared mailboxes. Paste the **Application (client) ID** — there is no secret |
+| HubSpot | A HubSpot app; paste its client ID and secret, and add the redirect URL the dialog shows to the app's Auth tab |
+
+A signed-in user reaches **their own** mailbox and calendar, plus shared mailboxes they already have access to. That is usually what a CSM wants, and it is a good deal narrower than the alternative.
+
+The older path is still there, under **Advanced** in the source's dialog: an app registration with *application* permissions and a client secret, or a HubSpot private-app token. Existing installs keep working untouched. Application permissions reach **every** mailbox in the tenant, which is why the mailbox allowlist matters more on that path — see [MCP servers](#several-mailboxes-not-one).
+
 **The description field matters.** Each source has a "what's in it" box that the bot reads to decide when to use that source — so write it for the bot: *"Monthly product usage exports per customer: seats, logins, feature adoption."* Better descriptions mean better answers.
 
 Other things worth knowing:
@@ -194,9 +212,9 @@ $env:HOST="0.0.0.0"; .\run.ps1
 | **Base URL** | Only for Ollama and OpenAI-compatible endpoints |
 | **Tool calling** | `auto` / `native` / `prompted` — see [Choosing a model](#choosing-a-model) |
 | **Request timeout** | Seconds to wait for a reply; raise it for slow local models |
-| **HubSpot private app token** | Fallback for HubSpot sources with no token of their own |
+| **HubSpot private app token** | Fallback for HubSpot sources that use the older token path rather than signing in |
 | **Commit tickets to HubSpot** | `auto` / `manual` / `off` — see [Where tickets end up](#where-tickets-end-up) |
-| **Microsoft tenant / client ID / client secret / default mailbox** | Fallback Entra ID app registration (Application permissions `Mail.Read` + `Mail.Send`, admin-consented; `Calendars.Read` for calendar tools) |
+| **Microsoft tenant / client ID / client secret / default mailbox** | Fallback Entra ID app registration for the older client-secret path (Application permissions `Mail.Read` + `Mail.Send`, admin-consented; `Calendars.Read` for calendar tools). Signing in on the Sources tab needs none of this beyond the client ID |
 | **Additional mailboxes** | Further mailboxes the bot and MCP server may read. Filling it in makes it an allowlist — see [MCP servers](#several-mailboxes-not-one) |
 
 **Test model connection** in that dialog does a one-token round trip, so you know the provider, key and model work before anyone asks a question.
@@ -356,6 +374,8 @@ app/
   spreadsheets.py  CSV/XLSX -> SQLite tables
   sqlsource.py     External SQL databases (SQLAlchemy, read-only)
   restsource.py    Generic REST API connector
+  oauth.py         Signing in to Microsoft (device code) and HubSpot (redirect);
+                   token storage and refresh, so nobody handles a secret
   hubspot.py       HubSpot CRM client (demo fallback)
   ms365.py         Microsoft Graph mail + calendar client, multi-mailbox (demo fallback)
   mcpsetup.py      Generates the MCP client config for this machine; merges it into
@@ -375,5 +395,6 @@ Notes:
 - Auth is lightweight (name + email → bearer token) — intended for a trusted internal team behind your network/VPN, not the public internet. There are no roles: everyone who can sign in can edit settings and data sources.
 - Installing components needs a signed-in user and only accepts the component keys in `app/deps.py`; set `DISABLE_UI_INSTALL=1` to switch it off on a locked-down box.
 - Spreadsheet SQL is enforced read-only; email replies require explicit user approval in chat before the bot calls the send tool.
+- OAuth tokens are stored server-side in `data/app.db` and never sent to the browser: the UI is told who is signed in, not what with. Editing a source cannot overwrite or clear them.
 - Connecting Claude Desktop writes to a file owned by another application: it is backed up first, merged rather than replaced, and left alone entirely if it cannot be parsed.
 - The MCP servers are read-only unless started with `--allow-writes`, and honour the mailbox allowlist before any request reaches Graph. They are as trusted as the client you connect them to — an MCP client with the mail server attached can read every mailbox the source permits.

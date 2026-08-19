@@ -1,10 +1,10 @@
 """FastAPI app: REST API for auth, chat, tickets, uploads, artifacts + static UI."""
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (bot, datasources, db, deps, llm, mcpsetup, settings, sla, spreadsheets,
+from . import (bot, datasources, db, deps, llm, mcpsetup, oauth, settings, sla, spreadsheets,
                ticketsync, tickets)
 from .config import ARTIFACT_DIR, BASE_DIR, EXPORT_DIR
 
@@ -362,6 +362,96 @@ def setup_job(job_id: int, user: dict = Depends(current_user)):
 
 
 # ---------- artifacts ----------
+
+# ---------- signing in to a data source ----------
+
+class OAuthPoll(BaseModel):
+    device_code: str
+
+
+def _redirect_uri(request: Request) -> str:
+    """Where HubSpot sends the user back. Derived from how they reached us, so it
+    is right on localhost, a LAN address or behind the service alike - it just has
+    to match one of the redirect URLs registered on the HubSpot app."""
+    return str(request.url_for("oauth_hubspot_callback"))
+
+
+@app.get("/api/datasources/{ds_id}/oauth")
+def oauth_state(ds_id: int, request: Request, user: dict = Depends(current_user)):
+    """What the Connect panel needs: whether it is connected, and what is missing."""
+    row = db.get_datasource(ds_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    state = datasources.connection_state(row)
+    state["redirect_uri"] = _redirect_uri(request)
+    spec = datasources.TYPES.get(row["type"], {})
+    state["auth"] = spec.get("auth")
+    return state
+
+
+@app.post("/api/datasources/{ds_id}/oauth/start")
+def oauth_start(ds_id: int, request: Request, user: dict = Depends(current_user)):
+    """Begin a sign-in: a device code for Microsoft, an authorize URL for HubSpot."""
+    row, config = datasources.resolve_by_id(ds_id)
+    spec = datasources.TYPES.get(row["type"], {})
+    auth = spec.get("auth")
+    if not auth:
+        raise HTTPException(status_code=400, detail=f"{row['type']} sources are not connected by signing in.")
+    try:
+        if auth["provider"] == "microsoft":
+            return oauth.ms_device_start(config)
+        return oauth.hubspot_start(config, _redirect_uri(request))
+    except oauth.OAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach the sign-in service: {exc}")
+
+
+@app.post("/api/datasources/{ds_id}/oauth/poll")
+def oauth_poll(ds_id: int, body: OAuthPoll, user: dict = Depends(current_user)):
+    """Has the user finished signing in yet? Microsoft device flow only."""
+    _, config = datasources.resolve_by_id(ds_id)
+    try:
+        return oauth.ms_device_poll(config, body.device_code)
+    except oauth.OAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/datasources/{ds_id}/oauth/disconnect")
+def oauth_disconnect(ds_id: int, user: dict = Depends(current_user)):
+    try:
+        return oauth.disconnect(ds_id)
+    except oauth.OAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/oauth/hubspot/callback", name="oauth_hubspot_callback",
+         response_class=HTMLResponse)
+def oauth_hubspot_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    """Where HubSpot returns the user. Deliberately unauthenticated: the browser
+    arrives here from HubSpot without our bearer token. The one-time `state`,
+    minted when the sign-in started, is what ties it back to a data source."""
+    if error:
+        return HTMLResponse(_oauth_page("Sign-in cancelled", error), status_code=400)
+    try:
+        result = oauth.hubspot_complete(state, code, str(request.url_for("oauth_hubspot_callback")))
+    except oauth.OAuthError as exc:
+        return HTMLResponse(_oauth_page("Could not connect HubSpot", str(exc)), status_code=400)
+    except Exception as exc:
+        return HTMLResponse(_oauth_page("Could not connect HubSpot", str(exc)), status_code=502)
+    who = result.get("account") or "your HubSpot account"
+    return HTMLResponse(_oauth_page("HubSpot connected", f"Signed in as {who}. You can close this tab."))
+
+
+def _oauth_page(title: str, detail: str) -> str:
+    """A plain page for the tab HubSpot sends back, which is outside the app's UI."""
+    from html import escape
+    return f"""<!doctype html><meta charset="utf-8"><title>{escape(title)}</title>
+<style>body{{font:15px/1.6 system-ui,sans-serif;margin:4rem auto;max-width:34rem;padding:0 1.5rem;
+color:#1c1e21}}h1{{font-size:1.25rem;margin:0 0 .5rem}}p{{color:#5c6470}}
+@media(prefers-color-scheme:dark){{body{{background:#16181c;color:#e8eaed}}p{{color:#9aa3af}}}}</style>
+<h1>{escape(title)}</h1><p>{escape(detail)}</p>"""
+
 
 # ---------- connecting a desktop assistant to the MCP servers ----------
 

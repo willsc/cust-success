@@ -453,6 +453,32 @@ label input, label textarea, label select {
   max-height: 8.5rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .install-log:empty { display: none; }
 
+/* ── connecting a source by signing in ───────────────── */
+.connect-panel { display: flex; align-items: center; gap: .75rem; margin-top: .9rem;
+  padding: .7rem .8rem; background: var(--panel-2); border: 1px solid var(--edge);
+  border-left: 3px solid var(--c1); border-radius: var(--r); }
+.connect-panel.on { border-left-color: var(--c3, var(--c1)); }
+.connect-panel > div { flex: 1; min-width: 160px; }
+.connect-panel strong { display: block; font-size: .88rem; font-weight: 650; }
+.connect-panel .muted { margin: .2rem 0 0; font-size: .78rem; }
+.connect-panel button { flex: none; }
+
+.signin-steps { margin: .2rem 0 1rem; padding-left: 1.2rem; line-height: 1.9; }
+.signin-steps li { margin-bottom: .3rem; }
+.signin-code { font-family: var(--mono); font-size: 1.5rem; font-weight: 650; letter-spacing: .12em;
+  background: var(--panel-3); border: 1px solid var(--edge); border-radius: var(--r);
+  padding: .55rem .8rem; margin: .4rem 0; display: inline-block; user-select: all; }
+.signin-wait { display: flex; align-items: center; gap: .5rem; color: var(--dim); font-size: .85rem; }
+.signin-wait svg { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
+
+.form-section { margin-top: 1rem; }
+.form-note { margin: .1rem 0 .8rem; font-size: .78rem; }
+.adv { margin-top: 1rem; border-top: 1px solid var(--edge); padding-top: .8rem; }
+.adv summary { cursor: pointer; font-size: .82rem; color: var(--ink-2); }
+.adv summary:hover { color: var(--ink); }
+.adv > label:first-of-type { margin-top: .7rem; }
+
 /* ── connecting a desktop assistant ──────────────────── */
 .mcp-panel { border-left-color: var(--c1); }
 .mcp-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .7rem; margin-top: .9rem; }
