@@ -1011,9 +1011,15 @@ async function loadSources() {
     const card = document.createElement("div");
     card.className = "source" + (s.enabled ? "" : " off");
 
-    const live = s.config && Object.values(s.config).some((v) => v);
+    const conn = s.connection || {};
+    // For a source that can be signed in to, the server says whether real data is
+    // actually reachable. A client ID sitting in a box is not a connection.
+    const live = conn.supported
+      ? conn.live
+      : (s.config && Object.values(s.config).some((v) => v));
     const status = !s.enabled ? `<span class="status off">disabled</span>`
       : s.type === "spreadsheet" ? `<span class="status ${s.tables?.length ? "live" : "demo"}">${s.tables?.length ? "loaded" : "empty"}</span>`
+      : conn.signed_in ? `<span class="status live">signed in</span>`
       : live ? `<span class="status live">configured</span>` : `<span class="status demo">demo data</span>`;
 
     const described = !!s.description;
@@ -1038,6 +1044,8 @@ async function loadSources() {
     const needed = missingRequired(s.type);
     const drivers = missingOptional(s.type);
     if (needed.length || drivers.length) card.appendChild(packNotice(needed, drivers));
+
+    if (spec.auth) card.appendChild(connectPanel(s, spec));
 
     if (s.type === "spreadsheet") {
       const schema = document.createElement("div");
@@ -1149,6 +1157,164 @@ async function showSchema(source) {
   $("p.muted", m.el).outerHTML = body;
 }
 
+/* ── connecting a source by signing in ───────────────────
+   Signing in beats pasting a client secret for almost everyone, so it is what
+   the card leads with. The older credential fields still exist, one disclosure
+   away, because application permissions reach shared mailboxes that a personal
+   sign-in cannot. */
+
+function connectPanel(source, spec) {
+  const el = document.createElement("div");
+  const c = source.connection || {};
+  el.className = "connect-panel" + (c.signed_in ? " on" : "");
+
+  if (c.signed_in) {
+    el.innerHTML = `
+      <span class="pack-ico">${icon("check")}</span>
+      <div>
+        <strong>Connected${c.account ? ` as ${esc(c.account)}` : ""}</strong>
+        <p class="muted">${esc(spec.auth.help)}</p>
+      </div>
+      <button class="small ghost" data-disconnect>Disconnect</button>`;
+    $("[data-disconnect]", el).addEventListener("click", async () => {
+      if (!confirm("Disconnect this source? The bot falls back to demo data until you connect again.")) return;
+      try {
+        await api(`/api/datasources/${source.id}/oauth/disconnect`, { method: "POST" });
+        toast("Disconnected", "ok");
+        loadSources();
+      } catch (e) { toast(e.message, "fail"); }
+    });
+    return el;
+  }
+
+  if (!c.ready) {
+    // One-time setup still outstanding: say what is missing and open the form there.
+    const names = (c.needs || []).map((n) =>
+      (spec.fields.find((f) => f.name === n) || {}).label || n);
+    // Keep this short: the full registration instructions live in the dialog the
+    // button opens, where someone is actually about to follow them.
+    el.innerHTML = `
+      <span class="pack-ico">${icon("key")}</span>
+      <div>
+        <strong>${esc(spec.auth.label)}</strong>
+        <p class="muted">One-off setup first: ${esc(names.join(" and "))}.</p>
+      </div>
+      <button class="small primary" data-setup>${icon("sliders")}Set it up</button>`;
+    $("[data-setup]", el).addEventListener("click", () => editSource(source, spec));
+    return el;
+  }
+
+  el.innerHTML = `
+    <span class="pack-ico">${icon("plug")}</span>
+    <div>
+      <strong>${esc(spec.auth.label)}</strong>
+      <p class="muted">${esc(spec.auth.help)}</p>
+    </div>
+    <button class="small primary" data-connect>${icon("plug")}Connect</button>`;
+  $("[data-connect]", el).addEventListener("click", () => startSignIn(source, spec));
+  return el;
+}
+
+async function startSignIn(source, spec) {
+  let started;
+  try {
+    started = await api(`/api/datasources/${source.id}/oauth/start`, { method: "POST" });
+  } catch (e) { return toast(e.message, "fail"); }
+
+  return started.mode === "device"
+    ? deviceSignIn(source, spec, started)
+    : redirectSignIn(source, spec, started);
+}
+
+function deviceSignIn(source, spec, started) {
+  const m = modal(`
+    <div class="modal-head">
+      <h2><span class="m-ico source-icon t-${esc(source.type)}">${typeIcon(source.type)}</span>
+        ${esc(spec.auth.label)}</h2>
+      <button class="icon-btn" data-close>${icon("close")}</button></div>
+    <ol class="signin-steps">
+      <li>Open <a href="${esc(started.verification_uri)}" target="_blank" rel="noopener"
+          >${esc(started.verification_uri)}</a></li>
+      <li>Enter this code:<div class="signin-code" id="signin-code">${esc(started.user_code)}</div>
+        <button class="small ghost" id="signin-copy">${icon("doc")}Copy code</button></li>
+      <li>Sign in as yourself and approve the permissions.</li>
+    </ol>
+    <p class="signin-wait" id="signin-wait">${icon("clock")}Waiting for you to finish signing in…</p>
+    <div class="modal-foot"><button class="ghost" data-close>Cancel</button></div>`);
+
+  let cancelled = false;
+  const stop = () => { cancelled = true; };
+  $$("[data-close]", m.el).forEach((b) => b.addEventListener("click", () => { stop(); m.close(); }));
+  $("#signin-copy", m.el).addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(started.user_code); toast("Code copied", "ok"); }
+    catch { toast("Select the code and copy it"); }
+  });
+
+  let wait = (started.interval || 5) * 1000;
+  const deadline = Date.now() + (started.expires_in || 900) * 1000;
+
+  const poll = async () => {
+    if (cancelled) return;
+    if (Date.now() > deadline) {
+      $("#signin-wait", m.el).innerHTML = "That code expired. Close this and try again.";
+      return;
+    }
+    try {
+      const r = await api(`/api/datasources/${source.id}/oauth/poll`,
+                          { method: "POST", json: { device_code: started.device_code } });
+      if (r.status === "connected") {
+        toast(`Connected${r.account ? ` as ${r.account}` : ""}`, "ok");
+        m.close(); loadSources();
+        return;
+      }
+      if (r.slow_down) wait += 5000;    // Microsoft asking us to back off
+    } catch (e) {
+      $("#signin-wait", m.el).innerHTML = `<span class="err-line">${esc(e.message)}</span>`;
+      return;
+    }
+    setTimeout(poll, wait);
+  };
+  setTimeout(poll, wait);
+}
+
+function redirectSignIn(source, spec, started) {
+  // HubSpot has no device flow, so this hands off to a tab and watches for the
+  // callback to land. The tab is opened from the click that got us here, so it
+  // is not treated as a pop-up.
+  window.open(started.url, "_blank", "noopener");
+  const m = modal(`
+    <div class="modal-head">
+      <h2><span class="m-ico source-icon t-${esc(source.type)}">${typeIcon(source.type)}</span>
+        ${esc(spec.auth.label)}</h2>
+      <button class="icon-btn" data-close>${icon("close")}</button></div>
+    <p>A tab has opened for you to sign in and choose the account to connect.
+      If it didn't, <a href="${esc(started.url)}" target="_blank" rel="noopener">open it here</a>.</p>
+    <p class="signin-wait" id="signin-wait">${icon("clock")}Waiting for you to finish signing in…</p>
+    <div class="modal-foot"><button class="ghost" data-close>Cancel</button></div>`);
+
+  let cancelled = false;
+  $$("[data-close]", m.el).forEach((b) => b.addEventListener("click", () => { cancelled = true; m.close(); }));
+
+  const deadline = Date.now() + 900000;
+  const poll = async () => {
+    if (cancelled) return;
+    if (Date.now() > deadline) {
+      $("#signin-wait", m.el).innerHTML = "Gave up waiting. Close this and try again.";
+      return;
+    }
+    try {
+      const state = await api(`/api/datasources/${source.id}/oauth`);
+      if (state.signed_in) {
+        toast(`Connected${state.account ? ` as ${state.account}` : ""}`, "ok");
+        m.close(); loadSources();
+        return;
+      }
+    } catch { /* keep waiting - the sign-in tab is the interesting one */ }
+    setTimeout(poll, 2000);
+  };
+  setTimeout(poll, 2000);
+}
+
 function fieldHtml(field, value) {
   const v = value ?? "";
   const help = field.help ? `<div class="field-help">${esc(field.help)}</div>` : "";
@@ -1176,8 +1342,16 @@ function readFields(root, fields) {
   return config;
 }
 
-function editSource(source, spec) {
+async function editSource(source, spec) {
   const fields = spec.fields || [];
+  const main = fields.filter((f) => !f.advanced);
+  const advanced = fields.filter((f) => f.advanced);
+  // The redirect URL is whatever address this app was reached on, which is the
+  // one the user has to register - so ask the server rather than guessing.
+  let redirectUri = "";
+  if (spec.auth && spec.auth.flow === "redirect") {
+    try { redirectUri = (await api(`/api/datasources/${source.id}/oauth`)).redirect_uri; } catch { /* shown blank */ }
+  }
   const m = modal(`
     <div class="modal-head">
       <h2><span class="m-ico source-icon t-${esc(source.type)}">${typeIcon(source.type)}</span>
@@ -1186,8 +1360,17 @@ function editSource(source, spec) {
     <label>Name<input id="f-name" value="${esc(source.name)}"></label>
     <label>What's in it — the bot reads this to decide when to use the source
       <textarea id="f-description" rows="3" placeholder="e.g. Monthly product usage exports per customer: seats, logins, feature adoption.">${esc(source.description)}</textarea></label>
-    ${fields.length ? `<h3 style="margin-top:1rem">Connection</h3>` : ""}
-    ${fields.map((f) => fieldHtml(f, source.config[f.name])).join("")}
+    ${main.length ? `<h3 class="form-section">${spec.auth ? "Sign-in setup" : "Connection"}</h3>` : ""}
+    ${spec.auth ? `<p class="muted form-note">${esc(spec.auth.setup)}</p>` : ""}
+    ${spec.auth && spec.auth.flow === "redirect"
+      ? `<label>Redirect URL — add this to the app's Auth tab
+           <input id="f-redirect" value="${esc(redirectUri)}" readonly onclick="this.select()"></label>` : ""}
+    ${main.map((f) => fieldHtml(f, source.config[f.name])).join("")}
+    ${advanced.length ? `
+      <details class="adv">
+        <summary>Advanced — connect with a secret instead, and other settings</summary>
+        ${advanced.map((f) => fieldHtml(f, source.config[f.name])).join("")}
+      </details>` : ""}
     ${spec.uploadable ? `<p class="muted">Upload files from the data source card once you've saved.</p>` : ""}
     <div class="modal-foot">
       <button class="ghost spacer" id="f-test">Test connection</button>

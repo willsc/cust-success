@@ -8,10 +8,14 @@ connector module.
 """
 import json
 
-from . import db, deps, hubspot, ms365, restsource, spreadsheets, sqlsource
+from . import db, deps, hubspot, ms365, oauth, restsource, spreadsheets, sqlsource
 
 # Field spec drives both the UI form and secret masking.
 # kind: text | password | textarea | select | checkbox | number
+# advanced: tucked behind a disclosure - the older credential path, or tuning
+#           nobody needs on the day they connect.
+# A type's `auth` block says it can be connected by signing in instead, which is
+# what the Sources tab offers first.
 TYPES = {
     "spreadsheet": {
         "label": "Spreadsheets",
@@ -24,23 +28,39 @@ TYPES = {
         "label": "HubSpot CRM",
         "icon": "🧡",
         "blurb": "Contacts, companies, deals and tickets from HubSpot.",
+        "auth": {
+            "provider": "hubspot",
+            "flow": "redirect",
+            "label": "Sign in with HubSpot",
+            "help": "Sign in to HubSpot and choose the account to connect. You never paste a token.",
+            "setup": "Needs a HubSpot app once: Settings → Integrations → Apps → Create app. Copy its "
+                     "client ID and secret below, and add the redirect URL shown here to the app's "
+                     "Auth tab.",
+            "needs": ["client_id", "client_secret"],
+        },
         "fields": [
-            {"name": "token", "label": "Private app token", "kind": "password",
-             "help": "HubSpot → Settings → Integrations → Private Apps. Leave blank to use demo data."},
+            {"name": "client_id", "label": "HubSpot app client ID", "kind": "text",
+             "help": "From your HubSpot app's Auth tab. Needed once, to enable signing in."},
+            {"name": "client_secret", "label": "HubSpot app client secret", "kind": "password",
+             "help": "From the same page. Stored on this server and never sent back to the browser."},
+            {"name": "token", "label": "Private app token", "kind": "password", "advanced": True,
+             "help": "The older way in, still supported: HubSpot → Settings → Integrations → "
+                     "Private Apps. Leave blank if you signed in above."},
             {"name": "contacts_properties", "label": "Extra contact properties", "kind": "text",
+             "advanced": True,
              "placeholder": "custom_tier, csm_owner", "help": "Comma-separated custom properties to fetch."},
             {"name": "companies_properties", "label": "Extra company properties", "kind": "text",
-             "placeholder": "renewal_date, arr"},
-            {"name": "deals_properties", "label": "Extra deal properties", "kind": "text"},
-            {"name": "tickets_properties", "label": "Extra ticket properties", "kind": "text"},
+             "advanced": True, "placeholder": "renewal_date, arr"},
+            {"name": "deals_properties", "label": "Extra deal properties", "kind": "text", "advanced": True},
+            {"name": "tickets_properties", "label": "Extra ticket properties", "kind": "text", "advanced": True},
             {"name": "ticket_pipeline", "label": "Ticket pipeline (for tickets we push)", "kind": "text",
-             "placeholder": "0 or Support Pipeline",
+             "advanced": True, "placeholder": "0 or Support Pipeline",
              "help": "Leave blank to use the portal's first ticket pipeline."},
             {"name": "ticket_stage_map", "label": "Status → pipeline stage", "kind": "textarea",
-             "placeholder": "open: 1\nin_progress: 2\nwaiting: 3\nclosed: 4",
+             "advanced": True, "placeholder": "open: 1\nin_progress: 2\nwaiting: 3\nclosed: 4",
              "help": "One per line. Leave blank to map onto the pipeline's stages in order."},
             {"name": "ticket_property_map", "label": "Field → HubSpot property", "kind": "textarea",
-             "placeholder": "queue: custom_owning_team\ncustomer_id: customer_id_uk_public",
+             "advanced": True, "placeholder": "queue: custom_owning_team\ncustomer_id: customer_id_uk_public",
              "help": "Send our routing fields to custom HubSpot properties. Anything unmapped is "
                      "written into the ticket body instead, so nothing is lost."},
         ],
@@ -49,21 +69,39 @@ TYPES = {
         "label": "Microsoft 365 Mail",
         "icon": "📧",
         "blurb": "Read and reply to shared mailboxes and calendars via Microsoft Graph.",
+        "auth": {
+            "provider": "microsoft",
+            "flow": "device",
+            "label": "Sign in with Microsoft",
+            "help": "Sign in as yourself. You get your own mailbox and calendar, plus any shared "
+                    "mailboxes you already have access to.",
+            "setup": "Needs an Entra ID app registration once: Authentication → allow public client "
+                     "flows, and delegated Graph permissions (Mail.Read, Mail.Send, Calendars.Read, "
+                     "and the .Shared variants for shared mailboxes). No client secret needed.",
+            "needs": ["client_id"],
+        },
         "fields": [
-            {"name": "mailbox", "label": "Mailbox address", "kind": "text",
-             "placeholder": "success@yourcompany.com",
-             "help": "The default mailbox — used whenever a request doesn't name one."},
+            {"name": "client_id", "label": "Application (client) ID", "kind": "text",
+             "help": "From the Entra ID app registration overview. Needed once, to enable signing in — "
+                     "it is not a secret."},
+            {"name": "tenant_id", "label": "Tenant ID", "kind": "text",
+             "placeholder": "organizations",
+             "help": "Your directory ID. Leave blank to let any work or school account sign in."},
             {"name": "mailboxes", "label": "Additional mailboxes", "kind": "textarea",
              "placeholder": "renewals@yourcompany.com\nescalations@yourcompany.com",
-             "help": "One per line (or comma-separated). Listing any here turns the set into an "
-                     "allowlist: only these mailboxes and the default can be read. Leave blank "
-                     "and every mailbox the app registration can reach is available."},
-            {"name": "tenant_id", "label": "Tenant ID", "kind": "text"},
-            {"name": "client_id", "label": "Client ID", "kind": "text"},
-            {"name": "client_secret", "label": "Client secret", "kind": "password",
-             "help": "Entra ID app registration with Mail.Read and Mail.Send application "
-                     "permissions, plus Calendars.Read for the calendar tools and "
-                     "User.Read.All to discover mailboxes rather than only the ones listed above."},
+             "help": "Shared mailboxes to read as well as your own. One per line, or comma-separated. "
+                     "Listing any turns the set into an allowlist: only these and the default can be "
+                     "read. Leave blank and anything the sign-in or app registration can reach is "
+                     "available."},
+            {"name": "mailbox", "label": "Default mailbox", "kind": "text", "advanced": True,
+             "placeholder": "success@yourcompany.com",
+             "help": "Used when a request doesn't name a mailbox. Signing in fills this in for you."},
+            {"name": "client_secret", "label": "Client secret", "kind": "password", "advanced": True,
+             "help": "The older way in, still supported: an app registration with *application* "
+                     "permissions (Mail.Read, Mail.Send, Calendars.Read, and User.Read.All to "
+                     "discover mailboxes), admin-consented. Leave blank if you signed in above. "
+                     "Application permissions reach every mailbox in the tenant, which is why "
+                     "the allowlist matters more on this path."},
         ],
     },
     "sql_database": {
@@ -127,11 +165,37 @@ def _parse(row: dict) -> dict:
         return {}
 
 
+def connection_state(row: dict, config: dict | None = None) -> dict:
+    """How this source is connected, in terms the UI can show without secrets."""
+    config = _parse(row) if config is None else config
+    spec = TYPES.get(row["type"], {})
+    if not spec.get("auth"):
+        return {"supported": False, "signed_in": False}
+    tokens = oauth.tokens_of(config)
+    missing = [name for name in spec["auth"].get("needs", []) if not config.get(name)]
+    # Whether real data is reachable, which is not the same as "some field has a
+    # value in it" - a client ID on its own connects to nothing.
+    checker = {"hubspot": hubspot.configured, "ms365_mail": ms365.configured}.get(row["type"])
+    return {
+        "supported": True,
+        "signed_in": bool(tokens),
+        "account": tokens.get("account", ""),
+        "connected_at": tokens.get("connected_at"),
+        "live": bool(checker(config)) if checker else False,
+        # What still has to be filled in before Connect can do anything.
+        "needs": missing,
+        "ready": not missing,
+    }
+
+
 def _public(row: dict) -> dict:
-    """Row shaped for the UI, with secrets masked."""
+    """Row shaped for the UI, with secrets masked and tokens withheld entirely."""
     config = _parse(row)
     secrets = _secret_fields(row["type"])
-    masked = {k: (MASK if k in secrets and v else v) for k, v in config.items()}
+    # OAuth tokens are not a field anyone edits and must never leave the server;
+    # the browser gets connection_state instead.
+    masked = {k: (MASK if k in secrets and v else v)
+              for k, v in config.items() if k not in ("oauth", "_source_id")}
     spec = TYPES.get(row["type"], {})
     out = {
         "id": row["id"], "name": row["name"], "type": row["type"],
@@ -139,6 +203,7 @@ def _public(row: dict) -> dict:
         "description": row.get("description", ""), "enabled": bool(row["enabled"]),
         "created_by": row.get("created_by", ""), "updated_at": row.get("updated_at", ""),
         "config": masked,
+        "connection": connection_state(row, config),
     }
     if row["type"] == "spreadsheet":
         out["tables"] = [
@@ -159,11 +224,18 @@ def get_source(ds_id: int) -> dict | None:
 
 
 def _raw(ds_id: int) -> tuple[dict, dict]:
-    """(row, unmasked config) — internal use only, never returned to the UI."""
+    """(row, unmasked config) — internal use only, never returned to the UI.
+
+    The config carries `_source_id` so a connector refreshing an expired OAuth
+    token knows which row to save it back to. `_public` and `update` both drop
+    it, so it never reaches the browser or the stored JSON.
+    """
     row = db.get_datasource(ds_id)
     if not row:
         raise ValueError(f"Data source {ds_id} not found")
-    return row, _parse(row)
+    config = _parse(row)
+    config["_source_id"] = row["id"]
+    return row, config
 
 
 def create(name: str, type_: str, description: str = "", config: dict | None = None,
@@ -188,6 +260,9 @@ def update(ds_id: int, name: str | None = None, description: str | None = None,
         for key, value in config.items():
             # A masked secret coming back from the UI means "unchanged"
             if key in secrets and value == MASK:
+                continue
+            # Tokens are not editable here, and the browser never had them.
+            if key in ("oauth", "_source_id"):
                 continue
             merged[key] = value
         config_json = json.dumps(merged)
@@ -248,12 +323,14 @@ def _catalog_entry(row: dict) -> dict:
         elif row["type"] == "hubspot":
             entry["objects"] = sorted(hubspot.DEFAULT_PROPERTIES)
             entry["live"] = hubspot.configured(config)
+            entry["signed_in_as"] = oauth.account_of(config)
             entry["query_with"] = "hubspot_query"
         elif row["type"] == "ms365_mail":
             entry["mailbox"] = ms365._settings(config)["mailbox"] or "(demo inbox)"
             entry["mailboxes"] = ms365.allowlist(config) or ["(demo inbox)"]
             entry["mailbox_allowlist"] = ms365.restricted(config)
             entry["live"] = ms365.configured(config)
+            entry["signed_in_as"] = oauth.account_of(config)
             entry["query_with"] = "list_mailboxes / search_email / read_email / reply_email"
         elif row["type"] == "rest_api":
             entry["base_url"] = config.get("base_url", "")
@@ -293,7 +370,12 @@ def _resolve(ds_id: int | None, type_: str) -> tuple[dict, dict]:
     if len(candidates) > 1:
         names = ", ".join(f"{r['id']}={r['name']}" for r in candidates)
         raise ValueError(f"Several {type_} sources exist — pass source_id. Options: {names}")
-    return candidates[0], _parse(candidates[0])
+    return _raw(candidates[0]["id"])
+
+
+def resolve_by_id(ds_id: int) -> tuple[dict, dict]:
+    """(row, unmasked config) for one source by id, for the sign-in endpoints."""
+    return _raw(ds_id)
 
 
 def resolve_config(type_: str, source_id: int | None = None) -> tuple[dict, dict]:

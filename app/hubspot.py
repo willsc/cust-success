@@ -1,7 +1,7 @@
 """HubSpot CRM access via a private-app token, with built-in demo data when unconfigured."""
 import httpx
 
-from . import settings
+from . import oauth, settings
 
 BASE = "https://api.hubapi.com"
 
@@ -73,25 +73,41 @@ def _check_type(object_type: str) -> str:
     return object_type
 
 
+def signed_in(source_config: dict | None = None) -> bool:
+    """The user connected this source by signing in, rather than pasting a token."""
+    return oauth.connected(source_config)
+
+
 def _token(source_config: dict | None = None) -> str:
-    """Per-source token, falling back to the shared one from Settings/environment."""
+    """A bearer token: the signed-in user's if there is one, else a private-app token."""
+    if oauth.connected(source_config):
+        return oauth.hubspot_access_token(source_config)
     if source_config and source_config.get("token"):
         return source_config["token"]
     return settings.value("HUBSPOT_TOKEN")
 
 
 def configured(source_config: dict | None = None) -> bool:
-    return bool(_token(source_config))
+    if signed_in(source_config):
+        return True
+    if source_config and source_config.get("token"):
+        return True
+    return bool(settings.value("HUBSPOT_TOKEN"))
 
 
 def test_connection(source_config: dict) -> dict:
     if not configured(source_config):
-        return {"ok": False, "message": "No access token set — the bot will use demo CRM data."}
+        return {"ok": False,
+                "message": "Not connected yet — click Connect to sign in, or paste a "
+                           "private-app token under Advanced. Until then the bot uses demo data."}
     try:
         result = query("contacts", limit=1, source_config=source_config)
     except Exception as exc:
         return {"ok": False, "message": str(exc)}
-    return {"ok": True, "message": f"Connected to HubSpot ({len(result['results'])} record read back)."}
+    who = oauth.account_of(source_config)
+    signed = f" as {who}" if who else ""
+    return {"ok": True,
+            "message": f"Connected{signed} to HubSpot ({len(result['results'])} record read back)."}
 
 
 def properties_for(object_type: str, source_config: dict | None = None) -> list[str]:
