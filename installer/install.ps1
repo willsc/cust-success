@@ -46,10 +46,6 @@ param(
     [switch]$IncludeOptional,
     # Register the Windows service so the app starts with the machine (needs admin).
     [switch]$Service,
-    # Leave Claude Desktop's configuration alone.
-    [switch]$SkipClaudeDesktop,
-    # Let the assistant reply to and send mail, not only read it.
-    [switch]$AllowMailSending,
     [switch]$NoShortcuts,
     [switch]$NoStart,
     [switch]$Uninstall
@@ -134,14 +130,6 @@ if ($Uninstall) {
         } else {
             Warn "The service is registered but service.ps1 is gone - remove it with: sc.exe delete CustomerSuccessHub"
         }
-    }
-
-    $python = Join-Path $runtimeDir "python.exe"
-    if ((Test-Path $python) -and -not $SkipClaudeDesktop) {
-        Note "Disconnecting Claude Desktop"
-        Push-Location $InstallDir
-        try { & $python -m app.mcpsetup disconnect | ForEach-Object { Note $_ } } catch { Warn $_.Exception.Message }
-        Pop-Location
     }
 
     try { Remove-Shortcuts } catch { Warn "Could not remove the shortcuts: $($_.Exception.Message)" }
@@ -327,30 +315,6 @@ if ($Service) {
         } catch {
             Warn "Could not add the firewall rule - colleagues may not be able to reach port $Port."
         }
-    }
-}
-
-# ---- connect Claude Desktop to the MCP servers ----
-
-if (-not $SkipClaudeDesktop) {
-    Say "Connecting Claude Desktop to the MCP servers"
-    $connectArgs = @("-m", "app.mcpsetup", "connect")
-    if ($AllowMailSending) { $connectArgs += "--allow-writes" }
-    Push-Location $InstallDir
-    try {
-        $env:CSHUB_DATA_DIR = $DataDir
-        $output = & $python @connectArgs 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $output | ForEach-Object { Note $_ }
-        } else {
-            # Not an install failure: Claude Desktop simply may not be here.
-            Note "Skipped - $output"
-            Note "The Sources tab has a Connect button for when it is installed."
-        }
-    } catch {
-        Warn "Could not update Claude Desktop's configuration: $($_.Exception.Message)"
-    } finally {
-        Pop-Location
     }
 }
 

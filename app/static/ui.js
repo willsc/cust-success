@@ -10,7 +10,6 @@ let ticketFields = null;   // queues, dependent request types, SLA targets
 let syncStatus = null;     // where tickets get committed (HubSpot vs local)
 let setup = null;      // optional-component status from /api/setup
 let jobTimer = null;   // poll handle for a running install
-let mcpState = null;   // MCP client wiring from /api/mcp
 
 /* ── helpers ─────────────────────────────────────────── */
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -41,6 +40,18 @@ function toast(message, kind = "") {
 }
 
 const icon = (name, cls = "") => `<svg class="${cls}"><use href="#i-${name}"/></svg>`;
+
+function whenText(iso) {
+  if (!iso) return "never";
+  const then = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z");
+  const mins = Math.round((Date.now() - then.getTime()) / 60000);
+  if (!isFinite(mins)) return "never";
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  return then.toLocaleDateString();
+}
 
 const TYPE_ICON = {
   spreadsheet: "grid", hubspot: "users", ms365_mail: "mail",
@@ -859,114 +870,6 @@ function renderSetupPanel() {
     btn.addEventListener("click", () => installPacks([btn.dataset.install])));
 }
 
-/* ── connecting a desktop assistant ──────────────────────
-   The MCP servers are launched by the assistant, so it needs this machine's
-   absolute paths. Nobody should be editing another app's JSON by hand to get
-   that, so the server works the config out and this offers to write it. */
-
-async function loadMcp() {
-  try { mcpState = await api("/api/mcp"); } catch { mcpState = null; }
-  renderMcpPanel();
-}
-
-async function connectMcp(allowWrites) {
-  const btn = $("#mcp-connect");
-  if (btn) { btn.disabled = true; btn.textContent = "Connecting…"; }
-  try {
-    const res = await api("/api/mcp/connect", { method: "POST", json: { allow_writes: allowWrites } });
-    toast(res.message, "ok");
-  } catch (e) { toast(e.message, "fail"); }
-  await loadMcp();
-}
-
-async function disconnectMcp() {
-  try {
-    const res = await api("/api/mcp/disconnect", { method: "POST", json: {} });
-    toast(res.message, "ok");
-  } catch (e) { toast(e.message, "fail"); }
-  await loadMcp();
-}
-
-async function copyMcpConfig(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("Configuration copied", "ok");
-  } catch {
-    // Clipboard access needs a secure context; selecting it is the fallback.
-    const pre = $("#mcp-json");
-    if (pre) {
-      const range = document.createRange();
-      range.selectNodeContents(pre);
-      const sel = window.getSelection();
-      sel.removeAllRanges(); sel.addRange(range);
-    }
-    toast("Press Ctrl+C to copy the selected text");
-  }
-}
-
-function renderMcpPanel() {
-  const panel = $("#mcp-panel");
-  if (!panel) return;
-  if (!mcpState || !mcpState.servers_present) { panel.innerHTML = ""; panel.classList.add("hidden"); return; }
-  panel.classList.remove("hidden");
-
-  const m = mcpState;
-  const writesOn = m.servers.some((s) => s.allow_writes);
-  const canWrite = m.servers.some((s) => s.supports_writes);
-  const rows = m.servers.map((s) => `
-    <div class="pack ${s.matches ? "on" : ""}">
-      <span class="pack-ico">${icon(s.key === "hubspot" ? "users" : "mail")}</span>
-      <div class="pack-body">
-        <strong>${esc(s.label)}
-          ${s.matches ? `<span class="status live">connected</span>`
-            : s.present ? `<span class="status demo">needs updating</span>`
-            : `<span class="status off">not connected</span>`}</strong>
-        <p class="muted">${esc(s.blurb)}</p>
-      </div>
-    </div>`).join("");
-
-  const action = !m.app_dir_exists
-    ? `<p class="muted">Claude Desktop isn't installed on this machine, so there's nothing to write to.
-         Copy the configuration below into whichever assistant you use.</p>`
-    : m.read_error
-      ? `<p class="err-line">${esc(m.read_error)}</p>`
-      : `<div class="mcp-actions">
-           <button class="primary" id="mcp-connect">${icon("plug")}${m.all_connected ? "Update" : "Connect"} Claude Desktop</button>
-           ${m.servers.some((s) => s.present) ? `<button class="ghost small" id="mcp-disconnect">Disconnect</button>` : ""}
-           ${canWrite ? `<label class="mcp-writes"><input type="checkbox" id="mcp-allow-writes" ${writesOn ? "checked" : ""}>
-             Also let it reply to and send mail</label>` : ""}
-         </div>`;
-
-  panel.innerHTML = `
-    <div class="setup-head">
-      <div>
-        <p class="kicker">Assistants</p>
-        <h2>${m.all_connected ? "Claude Desktop is connected" : "Use this data from Claude Desktop"}</h2>
-        <p class="muted">The same mailboxes and CRM this app reads can be read directly by an assistant
-          on this machine. It needs to know where this app lives — that's worked out for you below.</p>
-      </div>
-    </div>
-    <div class="pack-list">${rows}</div>
-    ${action}
-    ${m.other_servers.length ? `<p class="muted">Other servers already configured there
-      (${esc(m.other_servers.join(", "))}) are left untouched, and the file is backed up before any change.</p>` : ""}
-    <details class="mcp-details">
-      <summary>Configuration for another assistant</summary>
-      <p class="muted">Claude Code opened in the app folder picks these up on its own. For anything else,
-        paste this into its MCP settings.</p>
-      <pre class="mcp-json" id="mcp-json">${esc(writesOn ? m.config_json_writes : m.config_json)}</pre>
-      <button class="small ghost" id="mcp-copy">${icon("doc")}Copy</button>
-      <p class="pack-meta">Config file: ${esc(m.config_path)}</p>
-    </details>`;
-
-  $("#mcp-connect", panel)?.addEventListener("click", () =>
-    connectMcp($("#mcp-allow-writes", panel)?.checked || false));
-  $("#mcp-disconnect", panel)?.addEventListener("click", disconnectMcp);
-  $("#mcp-copy", panel)?.addEventListener("click", () =>
-    copyMcpConfig($("#mcp-allow-writes", panel)?.checked ? m.config_json_writes : m.config_json));
-  $("#mcp-allow-writes", panel)?.addEventListener("change", () => renderMcpPanel());
-}
-
 /* Banner on a source card whose type needs a package it hasn't got. */
 function packNotice(needed, drivers) {
   const el = document.createElement("div");
@@ -997,7 +900,6 @@ async function loadSources() {
   if (!sourceTypes.length) sourceTypes = await api("/api/datasource-types");
   const [sources] = await Promise.all([api("/api/datasources"), setup ? null : loadSetup()]);
   renderSetupPanel();
-  loadMcp();
   list.innerHTML = "";
 
   if (!sources.length) {
@@ -1033,6 +935,7 @@ async function loadSources() {
             s.description || "No description yet — add one so the bot knows when to use this source.")}</p>
         </div>
         <div class="source-actions">
+          ${s.syncable ? `<button class="small ghost" data-act="sync" title="Pull records into the local store">${icon("down")}Sync</button>` : ""}
           <button class="small ghost" data-act="test" title="Test connection">${icon("check")}Test</button>
           ${s.type === "spreadsheet" ? "" : `<button class="small ghost" data-act="schema" title="Inspect schema">${icon("table")}Schema</button>`}
           <button class="small ghost" data-act="edit" title="Configure">${icon("sliders")}Configure</button>
@@ -1046,6 +949,24 @@ async function loadSources() {
     if (needed.length || drivers.length) card.appendChild(packNotice(needed, drivers));
 
     if (spec.auth) card.appendChild(connectPanel(s, spec));
+
+    if (s.syncable) {
+      const synced = document.createElement("div");
+      synced.className = "schema";
+      synced.innerHTML = (s.tables || []).length
+        ? `<p class="sync-when">${(s.tables || []).reduce((n, t) => n + t.rows, 0)} records in the
+             local store, last synced ${esc(whenText(s.last_synced))}. Query them with SQL, or ask
+             the console for totals.</p>` +
+          (s.tables || []).map((t) => `
+            <div class="schema-row">
+              <code>${esc(t.table)}</code>
+              <span class="muted">${t.rows} rows</span>
+              <span class="cols">${esc(t.columns.join(", "))}</span>
+            </div>`).join("")
+        : `<p class="muted">Not synced yet — press Sync to pull the records in so they can be
+             counted, grouped and joined to your spreadsheets.</p>`;
+      card.appendChild(synced);
+    }
 
     if (s.type === "spreadsheet") {
       const schema = document.createElement("div");
@@ -1100,6 +1021,20 @@ async function loadSources() {
         if (r.needs) installPacks([r.needs]);   // missing package — fetch it now
       } catch (err) { toast(err.message, "fail"); }
       finally { e.target.disabled = false; e.target.textContent = "Test"; }
+    });
+    $("[data-act='sync']", card)?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true; btn.innerHTML = "Syncing…";
+      try {
+        const r = await api(`/api/datasources/${s.id}/sync`, { method: "POST" });
+        const where = r.live ? "" : " (demo data — this source isn't connected yet)";
+        toast(`Synced ${r.total_rows} records into ${r.tables.length} table${r.tables.length === 1 ? "" : "s"}${where}`,
+              r.live ? "ok" : "");
+        loadSources();
+      } catch (err) {
+        toast(err.message, "fail");
+        btn.disabled = false; btn.innerHTML = `${icon("down")}Sync`;
+      }
     });
     $("[data-act='schema']", card)?.addEventListener("click", () => showSchema(s));
     $("[data-act='edit']", card).addEventListener("click", () => editSource(s, spec));
