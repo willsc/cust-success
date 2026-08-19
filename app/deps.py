@@ -54,14 +54,6 @@ PACKS = {
         "modules": ["pymysql"],
         "size": "~1 MB",
     },
-    "mcp": {
-        "label": "MCP runtime",
-        "blurb": "Runs the servers in mcp_servers/, which expose the Microsoft 365 mailboxes "
-                 "and the HubSpot CRM to Claude Code, Claude Desktop or any other MCP client.",
-        "packages": ["mcp"],
-        "modules": ["mcp"],
-        "size": "~15 MB",
-    },
     "decks": {
         "label": "Presentation builder",
         "blurb": "Lets the bot generate .pptx decks on the Output tab.",
