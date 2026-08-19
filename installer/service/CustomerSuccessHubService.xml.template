@@ -11,15 +11,16 @@
   <name>Customer Success Hub</name>
   <description>Customer success bot, ticket board and data console. Serves http://localhost:@PORT@</description>
 
-  <executable>@INSTALLDIR@\runtime\python.exe</executable>
+  <executable>@PYTHON@</executable>
   <arguments>-m uvicorn app.main:app --host @HOST@ --port @PORT@</arguments>
   <workingdirectory>@INSTALLDIR@</workingdirectory>
 
   <!-- The app writes its databases, uploads and ticket exports here. The
        service runs as LocalSystem, so this must be an absolute path. -->
   <env name="CSHUB_DATA_DIR" value="@DATADIR@" />
-  <!-- Tells the Components panel that pip installs land in our private
-       runtime, not in a shared system Python. -->
+  <!-- Tells the Components panel that pip installs land in an interpreter of
+       our own - the bundled runtime, or a .venv on a from-source install -
+       rather than in a shared system Python. -->
   <env name="CSHUB_PRIVATE_RUNTIME" value="1" />
   <env name="PYTHONUNBUFFERED" value="1" />
   <env name="PYTHONIOENCODING" value="utf-8" />

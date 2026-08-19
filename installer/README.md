@@ -96,7 +96,7 @@ attach the installer to a release.
 | `CustomerSuccessHub.iss` | Inno Setup script: wizard, tasks, shortcuts, elevation for the service |
 | `bin\open.cmd` | Start Menu shortcut target — starts the server if needed, then opens the browser |
 | `bin\run-console.cmd` | Runs the server in a visible console (no service) |
-| `bin\service.ps1` | `install` / `uninstall` / `start` / `stop` / `restart` / `status` / `firewall` |
+| `bin\service.ps1` | `install` / `uninstall` / `start` / `stop` / `restart` / `status` / `firewall`. Backs the service with the bundled runtime, or a from-source `.venv`, whichever is present |
 | `service\CustomerSuccessHubService.xml.template` | WinSW definition; `service.ps1` fills in the paths and port |
 
 ## Managing it afterwards

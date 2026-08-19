@@ -55,9 +55,28 @@ function Read-Conf {
     }
 }
 
+function Resolve-Python {
+    # The installer lays down a private runtime; a from-source install on
+    # Windows has run.ps1's virtual environment instead. Either can back the
+    # service, so take whichever is actually there rather than assuming.
+    $candidates = @(
+        (Join-Path $InstallDir "runtime\python.exe"),
+        (Join-Path $InstallDir ".venv\Scripts\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) { return $candidate }
+    }
+    throw ("No Python found under $InstallDir - looked for runtime\python.exe and " +
+           ".venv\Scripts\python.exe. Install with installer\install.ps1, or run " +
+           "run.ps1 once from source to create the virtual environment.")
+}
+
 function Write-ServiceXml {
-    if (-not (Test-Path $template)) { throw "Missing $template — reinstall the app." }
+    if (-not (Test-Path $template)) { throw "Missing $template - reinstall the app." }
+    $python = Resolve-Python
+    Write-Host "Using interpreter: $python"
     $content = (Get-Content $template -Raw).
+        Replace("@PYTHON@", $python).
         Replace("@INSTALLDIR@", $InstallDir).
         Replace("@DATADIR@", $DataDir).
         Replace("@HOST@", $ListenHost).
