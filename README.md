@@ -109,6 +109,14 @@ The bundled runtime has its own pip, so the Components panel still installs spre
 
 Don't have the installer? Build it: [`installer/README.md`](installer/README.md), or run the **Windows installer** workflow in the Actions tab. It's unsigned, so SmartScreen warns on first run — *More info → Run anyway*, or sign it with your own certificate.
 
+### Windows 11 — one command, from source
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\install.ps1
+```
+
+Fetches a private Python, installs everything, makes shortcuts, connects Claude Desktop to the [MCP servers](#mcp-servers--the-same-connectors-outside-this-app) and opens the app — no administrator, no prerequisites, not even Python. Add `-Service` to have it start with the machine, `-Network` to let colleagues reach it, `-Uninstall` to remove it again (your data folder is left alone). See [installer/README.md](installer/README.md) for every option.
+
 ### Windows 11 — from source
 
 For development, or if you'd rather not install: get [Python 3.10+](https://www.python.org/downloads/) — tick **"Add python.exe to PATH"** — then **double-click `run.bat`**.
