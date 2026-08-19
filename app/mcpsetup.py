@@ -256,3 +256,60 @@ def disconnect() -> dict:
 
     return {"ok": True, "removed": removed, "backup": backup, "config_path": str(path),
             "message": "Disconnected. Restart Claude Desktop for it to take effect."}
+
+
+# ---------- command line ----------
+#
+# So an installer script — which has no browser and no session — can do the same
+# thing the Sources tab's button does:
+#
+#     python -m app.mcpsetup connect --allow-writes
+#     python -m app.mcpsetup status
+
+def _cli(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m app.mcpsetup",
+        description="Show or change how a desktop assistant reaches this app's MCP servers.")
+    parser.add_argument("action", nargs="?", default="status",
+                        choices=["status", "print", "connect", "disconnect"],
+                        help="status: what is wired up now. print: the config JSON. "
+                             "connect/disconnect: change Claude Desktop's config file.")
+    parser.add_argument("--allow-writes", action="store_true",
+                        help="Let the assistant reply to and send mail as well as read it.")
+    args = parser.parse_args(argv)
+
+    if args.action == "print":
+        print(document_json(args.allow_writes))
+        return 0
+
+    if args.action == "status":
+        state = status()
+        print(f"Python      : {state['interpreter']}")
+        print(f"Config file : {state['config_path']}"
+              f"{'' if state['config_exists'] else '  (does not exist yet)'}")
+        if state["read_error"]:
+            print(f"Problem     : {state['read_error']}")
+        for server in state["servers"]:
+            mark = "connected" if server["matches"] else (
+                "needs updating" if server["present"] else "not connected")
+            extra = " (may send mail)" if server["allow_writes"] else ""
+            print(f"  {server['key']:<8} {mark}{extra}")
+        if state["other_servers"]:
+            print(f"Other servers configured there: {', '.join(state['other_servers'])}")
+        return 0
+
+    try:
+        result = connect(args.allow_writes) if args.action == "connect" else disconnect()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(result["message"])
+    if result.get("backup"):
+        print(f"Previous config saved as {result['backup']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

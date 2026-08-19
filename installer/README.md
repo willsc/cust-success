@@ -1,5 +1,47 @@
 # Windows installer
 
+Two ways to install, both giving the same result:
+
+- **`install.ps1`** - one command, from a checkout. No Inno Setup, nothing to build.
+- **`build.ps1`** - compiles `CustomerSuccessHub-<version>-setup.exe` to hand round, for
+  people who should not see a command line at all.
+
+Either way the machine needs no prerequisites: not even Python.
+
+## install.ps1 - installing straight from a checkout
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\install.ps1
+```
+
+That fetches a private Python runtime, installs the app and its requirements,
+writes the configuration, creates Start Menu and desktop shortcuts, connects
+Claude Desktop to the MCP servers if it is installed, and opens the app. It
+needs no administrator rights.
+
+| Option | |
+|---|---|
+| `-Service` | Register the Windows service so it starts with the machine. The one step that asks for administrator, and it elevates itself |
+| `-Network` | Listen on `0.0.0.0` so colleagues can reach it; with `-Service`, adds the firewall rule too |
+| `-Port 8300` | Which port to listen on |
+| `-IncludeOptional` | Preload pandas, SQLAlchemy, drivers and python-pptx instead of installing them from the Sources tab later |
+| `-InstallDir` / `-DataDir` | Somewhere other than `%LOCALAPPDATA%` |
+| `-AllowMailSending` | Let the assistant reply to and send mail, not only read it |
+| `-SkipClaudeDesktop` | Leave Claude Desktop's configuration alone |
+| `-NoShortcuts`, `-NoStart` | Skip the shortcuts; do not launch at the end |
+| `-Uninstall` | Remove the service, shortcuts and program folder. **Leaves the data folder alone** |
+
+Everything essential fails loudly and stops; the cosmetic parts do not. If
+Windows Script Host is disabled by policy, or the profile has no desktop, the
+shortcuts are skipped with a warning and the install still finishes. If Claude
+Desktop is not installed, that step is skipped and the Sources tab keeps its
+Connect button for later.
+
+The full build below is still the right choice for handing something to someone
+who should never see PowerShell.
+
+## build.ps1 - a Setup.exe
+
 Builds `CustomerSuccessHub-<version>-setup.exe`: a single file that installs the
 app, a private Python runtime and (optionally) a Windows service, with no
 prerequisites on the target machine.
@@ -49,6 +91,7 @@ attach the installer to a release.
 
 | File | What it is |
 |---|---|
+| `install.ps1` | Installs (and uninstalls) directly from a checkout, no Inno Setup needed |
 | `build.ps1` | Stages the payload and compiles the installer |
 | `CustomerSuccessHub.iss` | Inno Setup script: wizard, tasks, shortcuts, elevation for the service |
 | `bin\open.cmd` | Start Menu shortcut target — starts the server if needed, then opens the browser |
@@ -57,6 +100,14 @@ attach the installer to a release.
 | `service\CustomerSuccessHubService.xml.template` | WinSW definition; `service.ps1` fills in the paths and port |
 
 ## Managing it afterwards
+
+Installed with `install.ps1`? Uninstall the same way:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\install.ps1 -Uninstall
+```
+
+The service can be controlled directly however it was installed:
 
 ```powershell
 cd "$env:LOCALAPPDATA\Programs\Customer Success Hub\bin"
