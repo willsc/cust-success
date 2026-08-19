@@ -221,9 +221,13 @@ The same applies to the bot inside the app, which gained a `list_mailboxes` tool
 
 ### Connecting a client
 
-The repo ships a `.mcp.json`, so **Claude Code opened in this folder finds both servers already configured** — read-only. On Windows change `.venv/bin/python` to `.venv\Scripts\python.exe`.
+**The Sources tab has a "Connect Claude Desktop" button.** That is the whole procedure: it works out this machine's Python and the absolute paths of the servers — which differ between a checkout, a venv and the installer's private runtime — and writes them into Claude Desktop's config. Quit Claude Desktop and reopen it and the tools are there. A checkbox on the same panel decides whether it may also send mail; the panel shows the exact JSON for any other assistant, and a Disconnect button takes the entries out again.
 
-For Claude Desktop, or to register them by hand, point the client at the script with an absolute path (the servers do not care what directory they start in):
+Because that file belongs to another application, the button is careful with it. It never creates a config where Claude Desktop is not installed, never touches one holding JSON it cannot parse (it says so and stops, rather than guessing), copies the file to a timestamped backup before every change, and **merges** — MCP servers you set up yourself, and any other settings in the file, are left exactly as they were. Disconnect removes only this app's two entries.
+
+**Claude Code** opened in this folder needs nothing: the repo ships a `.mcp.json` and picks both servers up read-only. On Windows change `.venv/bin/python` to `.venv\Scripts\python.exe`.
+
+To register them by hand instead, point the client at the script with an absolute path (the servers do not care what directory they start in):
 
 ```bash
 claude mcp add ms365 -- /path/to/cust-success/.venv/bin/python /path/to/cust-success/mcp_servers/ms365_server.py
@@ -338,6 +342,8 @@ app/
   restsource.py    Generic REST API connector
   hubspot.py       HubSpot CRM client (demo fallback)
   ms365.py         Microsoft Graph mail + calendar client, multi-mailbox (demo fallback)
+  mcpsetup.py      Generates the MCP client config for this machine; merges it into
+                   Claude Desktop's file, with backups, never clobbering other servers
   reports.py       HTML report + python-pptx presentation generation
   static/          Web UI (vanilla JS, no build step)
 mcp_servers/       MCP servers exposing the connectors to any MCP client (shipped by the installer too)
@@ -353,4 +359,5 @@ Notes:
 - Auth is lightweight (name + email → bearer token) — intended for a trusted internal team behind your network/VPN, not the public internet. There are no roles: everyone who can sign in can edit settings and data sources.
 - Installing components needs a signed-in user and only accepts the component keys in `app/deps.py`; set `DISABLE_UI_INSTALL=1` to switch it off on a locked-down box.
 - Spreadsheet SQL is enforced read-only; email replies require explicit user approval in chat before the bot calls the send tool.
+- Connecting Claude Desktop writes to a file owned by another application: it is backed up first, merged rather than replaced, and left alone entirely if it cannot be parsed.
 - The MCP servers are read-only unless started with `--allow-writes`, and honour the mailbox allowlist before any request reaches Graph. They are as trusted as the client you connect them to — an MCP client with the mail server attached can read every mailbox the source permits.
