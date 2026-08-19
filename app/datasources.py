@@ -32,20 +32,29 @@ TYPES = {
             "provider": "hubspot",
             "flow": "redirect",
             "label": "Sign in with HubSpot",
-            "help": "Sign in to HubSpot and choose the account to connect. You never paste a token.",
-            "setup": "Needs a HubSpot app once: Settings → Integrations → Apps → Create app. Copy its "
-                     "client ID and secret below, and add the redirect URL shown here to the app's "
-                     "Auth tab.",
+            "help": "Sign in to HubSpot and choose the account to connect, so each person uses "
+                    "their own access rather than a shared token.",
+            "setup": "Needs a HubSpot app once: Settings → Integrations → Apps → Create app. Copy "
+                     "its client ID and secret below, and add the redirect URL shown here to the "
+                     "app's Auth tab.",
+            # Signing in is not the shortest route here, and saying so is more use
+            # than steering people down the longer one.
+            "simpler": "Quickest way in: paste a private app token — a few clicks in HubSpot, "
+                       "with no redirect URL and no secret to look after.",
             "needs": ["client_id", "client_secret"],
         },
         "fields": [
-            {"name": "client_id", "label": "HubSpot app client ID", "kind": "text",
-             "help": "From your HubSpot app's Auth tab. Needed once, to enable signing in."},
+            {"name": "token", "label": "Private app token", "kind": "password",
+             "help": "The quickest way to connect. In HubSpot: Settings (the gear) → Integrations → "
+                     "Private Apps → Create a private app → on the Scopes tab tick "
+                     "crm.objects.contacts.read, crm.objects.companies.read, crm.objects.deals.read "
+                     "and tickets → Create app → copy the token and paste it here. "
+                     "Leave blank if you would rather sign in below."},
+            {"name": "client_id", "label": "HubSpot app client ID", "kind": "text", "advanced": True,
+             "help": "Only needed for the Sign in with HubSpot button. From your HubSpot app's Auth tab."},
             {"name": "client_secret", "label": "HubSpot app client secret", "kind": "password",
+             "advanced": True,
              "help": "From the same page. Stored on this server and never sent back to the browser."},
-            {"name": "token", "label": "Private app token", "kind": "password", "advanced": True,
-             "help": "The older way in, still supported: HubSpot → Settings → Integrations → "
-                     "Private Apps. Leave blank if you signed in above."},
             {"name": "contacts_properties", "label": "Extra contact properties", "kind": "text",
              "advanced": True,
              "placeholder": "custom_tier, csm_owner", "help": "Comma-separated custom properties to fetch."},
@@ -75,9 +84,13 @@ TYPES = {
             "label": "Sign in with Microsoft",
             "help": "Sign in as yourself. You get your own mailbox and calendar, plus any shared "
                     "mailboxes you already have access to.",
-            "setup": "Needs an Entra ID app registration once: Authentication → allow public client "
-                     "flows, and delegated Graph permissions (Mail.Read, Mail.Send, Calendars.Read, "
-                     "and the .Shared variants for shared mailboxes). No client secret needed.",
+            "setup": "Needs one Entra ID app registration, once for everybody. In the Azure portal: "
+                     "Entra ID → App registrations → New registration → name it, leave the redirect "
+                     "URI blank → Register. Then Authentication → Allow public client flows → Yes. "
+                     "Then API permissions → Microsoft Graph → Delegated → add Mail.Read, Mail.Send, "
+                     "Calendars.Read (and the .Shared variants to reach shared mailboxes) → Grant "
+                     "admin consent. Copy the Application (client) ID from the Overview page into "
+                     "the box below. There is no secret to create or store.",
             "needs": ["client_id"],
         },
         "fields": [

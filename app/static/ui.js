@@ -1122,19 +1122,34 @@ function connectPanel(source, spec) {
     return el;
   }
 
+  if (c.live) {
+    // Already reaching real data by some other route - a private app token, or an
+    // app registration. Nothing is wrong, so don't push a second way in.
+    el.className = "connect-panel on";
+    el.innerHTML = `
+      <span class="pack-ico">${icon("check")}</span>
+      <div>
+        <strong>Connected</strong>
+        <p class="muted">Using the credentials in Configure. You can switch to signing in per person
+          instead, if you would rather each user used their own access.</p>
+      </div>
+      <button class="small ghost" data-setup>${icon("sliders")}Configure</button>`;
+    $("[data-setup]", el).addEventListener("click", () => editSource(source, spec));
+    return el;
+  }
+
   if (!c.ready) {
-    // One-time setup still outstanding: say what is missing and open the form there.
+    // Nothing set up yet. Where a shorter route exists, lead with that rather than
+    // sending someone off to register an OAuth app they may not need.
     const names = (c.needs || []).map((n) =>
       (spec.fields.find((f) => f.name === n) || {}).label || n);
-    // Keep this short: the full registration instructions live in the dialog the
-    // button opens, where someone is actually about to follow them.
     el.innerHTML = `
       <span class="pack-ico">${icon("key")}</span>
       <div>
-        <strong>${esc(spec.auth.label)}</strong>
-        <p class="muted">One-off setup first: ${esc(names.join(" and "))}.</p>
+        <strong>${esc(spec.auth.simpler ? "Connect this source" : spec.auth.label)}</strong>
+        <p class="muted">${esc(spec.auth.simpler || `One-off setup first: ${names.join(" and ")}.`)}</p>
       </div>
-      <button class="small primary" data-setup>${icon("sliders")}Set it up</button>`;
+      <button class="small primary" data-setup>${icon("sliders")}${spec.auth.simpler ? "Connect" : "Set it up"}</button>`;
     $("[data-setup]", el).addEventListener("click", () => editSource(source, spec));
     return el;
   }
@@ -1295,15 +1310,16 @@ async function editSource(source, spec) {
     <label>Name<input id="f-name" value="${esc(source.name)}"></label>
     <label>What's in it — the bot reads this to decide when to use the source
       <textarea id="f-description" rows="3" placeholder="e.g. Monthly product usage exports per customer: seats, logins, feature adoption.">${esc(source.description)}</textarea></label>
-    ${main.length ? `<h3 class="form-section">${spec.auth ? "Sign-in setup" : "Connection"}</h3>` : ""}
-    ${spec.auth ? `<p class="muted form-note">${esc(spec.auth.setup)}</p>` : ""}
-    ${spec.auth && spec.auth.flow === "redirect"
-      ? `<label>Redirect URL — add this to the app's Auth tab
-           <input id="f-redirect" value="${esc(redirectUri)}" readonly onclick="this.select()"></label>` : ""}
+    ${main.length ? `<h3 class="form-section">Connection</h3>` : ""}
+    ${spec.auth && !spec.auth.simpler ? `<p class="muted form-note">${esc(spec.auth.setup)}</p>` : ""}
     ${main.map((f) => fieldHtml(f, source.config[f.name])).join("")}
     ${advanced.length ? `
       <details class="adv">
-        <summary>Advanced — connect with a secret instead, and other settings</summary>
+        <summary>Advanced — sign-in setup and other settings</summary>
+        ${spec.auth && spec.auth.flow === "redirect"
+          ? `<p class="muted form-note">${esc(spec.auth.setup)}</p>
+             <label>Redirect URL — add this to the app's Auth tab
+               <input id="f-redirect" value="${esc(redirectUri)}" readonly onclick="this.select()"></label>` : ""}
         ${advanced.map((f) => fieldHtml(f, source.config[f.name])).join("")}
       </details>` : ""}
     ${spec.uploadable ? `<p class="muted">Upload files from the data source card once you've saved.</p>` : ""}
