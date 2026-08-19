@@ -453,6 +453,19 @@ label input, label textarea, label select {
   max-height: 8.5rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .install-log:empty { display: none; }
 
+/* ── connecting a desktop assistant ──────────────────── */
+.mcp-panel { border-left-color: var(--c1); }
+.mcp-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .7rem; margin-top: .9rem; }
+.mcp-writes { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: var(--ink-2); }
+.mcp-writes input { width: auto; margin: 0; }
+.mcp-details { margin-top: .9rem; }
+.mcp-details summary { cursor: pointer; font-size: .8rem; color: var(--ink-2); }
+.mcp-details summary:hover { color: var(--ink); }
+.mcp-details > .muted { margin: .5rem 0; }
+.mcp-json { font-family: var(--mono); font-size: .7rem; color: var(--ink-2); background: var(--panel-3);
+  border: 1px solid var(--edge); border-radius: var(--r); padding: .6rem .7rem; margin: 0 0 .5rem;
+  max-height: 15rem; overflow: auto; white-space: pre; }
+
 .pack-notice { display: flex; align-items: center; gap: .75rem; margin-top: .9rem; padding: .65rem .75rem;
   background: var(--c6-soft); border-radius: var(--r); }
 .pack-notice.soft { background: var(--panel-2); }

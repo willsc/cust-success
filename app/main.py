@@ -4,7 +4,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import bot, datasources, db, deps, llm, settings, sla, spreadsheets, ticketsync, tickets
+from . import (bot, datasources, db, deps, llm, mcpsetup, settings, sla, spreadsheets,
+               ticketsync, tickets)
 from .config import ARTIFACT_DIR, BASE_DIR, EXPORT_DIR
 
 app = FastAPI(title="Customer Success Bot")
@@ -361,6 +362,34 @@ def setup_job(job_id: int, user: dict = Depends(current_user)):
 
 
 # ---------- artifacts ----------
+
+# ---------- connecting a desktop assistant to the MCP servers ----------
+
+class ConnectRequest(BaseModel):
+    allow_writes: bool = False
+
+
+@app.get("/api/mcp")
+def mcp_status(user: dict = Depends(current_user)):
+    """The config this machine needs, and whether Claude Desktop already has it."""
+    return mcpsetup.status()
+
+
+@app.post("/api/mcp/connect")
+def mcp_connect(body: ConnectRequest, user: dict = Depends(current_user)):
+    try:
+        return mcpsetup.connect(body.allow_writes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/mcp/disconnect")
+def mcp_disconnect(user: dict = Depends(current_user)):
+    try:
+        return mcpsetup.disconnect()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 @app.get("/api/artifacts")
 def artifacts(user: dict = Depends(current_user)):
