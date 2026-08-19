@@ -31,6 +31,8 @@ Guidelines:
 - For SQL sources, inspect the table/column list from list_data_sources, then write precise SELECT queries.
   Spreadsheets are SQLite; external databases use their own dialect (Postgres, MySQL, ...).
 - Cite concrete numbers from the data; never invent customer data.
+- A mailbox source may cover several mailboxes. Call list_mailboxes when the request names one
+  other than the default, and pass that mailbox to search_email/read_email/reply_email.
 - Before sending an email reply, show the user the draft and get their confirmation in conversation.
   Only call reply_email after the user has approved the draft text.
 - When asked for a report or presentation, gather the data first, then generate the artifact and
@@ -85,25 +87,37 @@ TOOLS = [
         },
     },
     {
+        "name": "list_mailboxes",
+        "description": "List the Microsoft 365 mailboxes this team can read. Call this before search_email when a request names a mailbox other than the default one, or when you are unsure which mailboxes exist.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "integer", "description": "Mailbox data source id; omit if only one exists."},
+            },
+        },
+    },
+    {
         "name": "search_email",
-        "description": "List or search messages in the team's Microsoft 365 mailbox. Returns id, subject, sender, date, and a short preview for each message.",
+        "description": "List or search messages in one of the team's Microsoft 365 mailboxes. Returns id, subject, sender, date, and a short preview for each message.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "search": {"type": "string", "description": "Free-text search; omit to list the latest messages."},
-                "folder": {"type": "string", "description": "Mail folder, default 'inbox'."},
+                "folder": {"type": "string", "description": "Mail folder, default 'inbox'. Pass 'all' to search every folder."},
                 "limit": {"type": "integer", "description": "Max messages, default 10."},
+                "mailbox": {"type": "string", "description": "Mailbox address to read, e.g. renewals@yourcompany.com. Omit for the source's default mailbox; see list_mailboxes."},
                 "source_id": {"type": "integer", "description": "Mailbox data source id; omit if only one exists."},
             },
         },
     },
     {
         "name": "read_email",
-        "description": "Read the full body of one email by its id (from search_email).",
+        "description": "Read the full body of one email by its id (from search_email). Pass the same mailbox you found it in.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "message_id": {"type": "string"},
+                "mailbox": {"type": "string", "description": "The mailbox the message lives in; omit for the default."},
                 "source_id": {"type": "integer", "description": "Mailbox data source id; omit if only one exists."},
             },
             "required": ["message_id"],
@@ -117,6 +131,7 @@ TOOLS = [
             "properties": {
                 "message_id": {"type": "string"},
                 "body": {"type": "string", "description": "Plain-text reply body, exactly as approved by the user."},
+                "mailbox": {"type": "string", "description": "The mailbox to reply from; omit for the default. Must be the mailbox the message was found in."},
                 "source_id": {"type": "integer", "description": "Mailbox data source id; omit if only one exists."},
             },
             "required": ["message_id", "body"],
@@ -271,13 +286,18 @@ def _execute_tool(name: str, args: dict, user: dict) -> str:
     if name == "hubspot_query":
         return json.dumps(datasources.hubspot_query(
             args["object_type"], args.get("search", ""), args.get("limit", 20), args.get("source_id")))
+    if name == "list_mailboxes":
+        return json.dumps(datasources.list_mailboxes(args.get("source_id")))
     if name == "search_email":
         return json.dumps(datasources.search_email(
-            args.get("search", ""), args.get("folder", "inbox"), args.get("limit", 10), args.get("source_id")))
+            args.get("search", ""), args.get("folder", "inbox"), args.get("limit", 10),
+            args.get("source_id"), args.get("mailbox", "")))
     if name == "read_email":
-        return json.dumps(datasources.read_email(args["message_id"], args.get("source_id")))
+        return json.dumps(datasources.read_email(
+            args["message_id"], args.get("source_id"), args.get("mailbox", "")))
     if name == "reply_email":
-        return json.dumps(datasources.reply_email(args["message_id"], args["body"], args.get("source_id")))
+        return json.dumps(datasources.reply_email(
+            args["message_id"], args["body"], args.get("source_id"), args.get("mailbox", "")))
     if name == "call_api":
         return json.dumps(datasources.call_api(
             args["path"], args.get("method", "GET"), args.get("params"), args.get("body"), args.get("source_id")))
