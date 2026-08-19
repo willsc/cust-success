@@ -48,14 +48,22 @@ TYPES = {
     "ms365_mail": {
         "label": "Microsoft 365 Mail",
         "icon": "📧",
-        "blurb": "Read and reply to a shared mailbox via Microsoft Graph.",
+        "blurb": "Read and reply to shared mailboxes and calendars via Microsoft Graph.",
         "fields": [
             {"name": "mailbox", "label": "Mailbox address", "kind": "text",
-             "placeholder": "success@yourcompany.com"},
+             "placeholder": "success@yourcompany.com",
+             "help": "The default mailbox — used whenever a request doesn't name one."},
+            {"name": "mailboxes", "label": "Additional mailboxes", "kind": "textarea",
+             "placeholder": "renewals@yourcompany.com\nescalations@yourcompany.com",
+             "help": "One per line (or comma-separated). Listing any here turns the set into an "
+                     "allowlist: only these mailboxes and the default can be read. Leave blank "
+                     "and every mailbox the app registration can reach is available."},
             {"name": "tenant_id", "label": "Tenant ID", "kind": "text"},
             {"name": "client_id", "label": "Client ID", "kind": "text"},
             {"name": "client_secret", "label": "Client secret", "kind": "password",
-             "help": "Entra ID app registration with Mail.Read and Mail.Send application permissions."},
+             "help": "Entra ID app registration with Mail.Read and Mail.Send application "
+                     "permissions, plus Calendars.Read for the calendar tools and "
+                     "User.Read.All to discover mailboxes rather than only the ones listed above."},
         ],
     },
     "sql_database": {
@@ -243,8 +251,10 @@ def _catalog_entry(row: dict) -> dict:
             entry["query_with"] = "hubspot_query"
         elif row["type"] == "ms365_mail":
             entry["mailbox"] = ms365._settings(config)["mailbox"] or "(demo inbox)"
+            entry["mailboxes"] = ms365.allowlist(config) or ["(demo inbox)"]
+            entry["mailbox_allowlist"] = ms365.restricted(config)
             entry["live"] = ms365.configured(config)
-            entry["query_with"] = "search_email / read_email / reply_email"
+            entry["query_with"] = "list_mailboxes / search_email / read_email / reply_email"
         elif row["type"] == "rest_api":
             entry["base_url"] = config.get("base_url", "")
             entry["writes_allowed"] = bool(config.get("allow_writes"))
@@ -286,6 +296,13 @@ def _resolve(ds_id: int | None, type_: str) -> tuple[dict, dict]:
     return candidates[0], _parse(candidates[0])
 
 
+def resolve_config(type_: str, source_id: int | None = None) -> tuple[dict, dict]:
+    """(row, unmasked config) for a source of `type_` — the one named, else the
+    only enabled one. Used by the bot's dispatch below and by the MCP servers,
+    which run in their own process against the same database."""
+    return _resolve(source_id, type_)
+
+
 # ---------- query dispatch used by the bot ----------
 
 def query_sql(sql: str, source_id: int | None = None) -> dict:
@@ -318,20 +335,26 @@ def hubspot_query(object_type: str, search: str = "", limit: int = 20,
     return hubspot.query(object_type, search, limit, source_config=config)
 
 
+def list_mailboxes(source_id: int | None = None) -> dict:
+    _, config = _resolve(source_id, "ms365_mail")
+    return ms365.list_mailboxes(config)
+
+
 def search_email(search: str = "", folder: str = "inbox", limit: int = 10,
-                 source_id: int | None = None) -> dict:
+                 source_id: int | None = None, mailbox: str = "") -> dict:
     _, config = _resolve(source_id, "ms365_mail")
-    return ms365.list_messages(search, folder, limit, source_config=config)
+    return ms365.list_messages(search, folder, limit, source_config=config, mailbox=mailbox)
 
 
-def read_email(message_id: str, source_id: int | None = None) -> dict:
+def read_email(message_id: str, source_id: int | None = None, mailbox: str = "") -> dict:
     _, config = _resolve(source_id, "ms365_mail")
-    return ms365.read_message(message_id, source_config=config)
+    return ms365.read_message(message_id, source_config=config, mailbox=mailbox)
 
 
-def reply_email(message_id: str, body: str, source_id: int | None = None) -> dict:
+def reply_email(message_id: str, body: str, source_id: int | None = None,
+                mailbox: str = "") -> dict:
     _, config = _resolve(source_id, "ms365_mail")
-    return ms365.reply_message(message_id, body, source_config=config)
+    return ms365.reply_message(message_id, body, source_config=config, mailbox=mailbox)
 
 
 def call_api(path: str, method: str = "GET", params: dict | None = None,

@@ -627,6 +627,9 @@ function settingFieldHtml(field) {
   const control = field.kind === "select"
     ? `<select id="s-${field.key}">${(field.options || []).map(opt).map((o) =>
         `<option value="${esc(o.value)}" ${o.value === field.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>`
+    : field.kind === "textarea"
+    ? `<textarea id="s-${field.key}" rows="2" placeholder="${esc(field.placeholder || "")}"
+        autocomplete="off" spellcheck="false">${esc(field.value)}</textarea>`
     : `<input id="s-${field.key}" type="${type}" value="${esc(field.value)}"${list}
         placeholder="${esc(field.placeholder || "")}" autocomplete="off" spellcheck="false">`;
   return `

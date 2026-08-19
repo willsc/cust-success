@@ -76,7 +76,7 @@ Everything the bot can reach is configured in the UI — nothing is hard-coded. 
 |---|---|
 | 📊 **Spreadsheets** | Drop CSV/Excel files onto the card; each sheet becomes a SQL table |
 | 🧡 **HubSpot CRM** | Contacts, companies, deals, tickets — plus any custom properties you name |
-| 📧 **Microsoft 365 Mail** | A shared mailbox to read and reply from, via Microsoft Graph |
+| 📧 **Microsoft 365 Mail** | Shared mailboxes to read and reply from, plus calendars, via Microsoft Graph |
 | 🗄️ **SQL Database** | PostgreSQL, MySQL, SQL Server or SQLite. Read-only |
 | 🔌 **REST API** | Any JSON HTTP API — Zendesk, Jira, Stripe, an internal service. Bearer / API-key / basic auth. Read-only unless you allow writes |
 
@@ -147,6 +147,7 @@ The base install is only the web server, the Claude SDK and `httpx` (which is al
 | PostgreSQL driver | `psycopg2-binary` | `postgresql://` connection URLs |
 | MySQL driver | `pymysql` | `mysql://` connection URLs |
 | Presentation builder | `python-pptx` | Bot-generated `.pptx` decks |
+| MCP runtime | `mcp` | The [MCP servers](#mcp-servers--the-same-connectors-outside-this-app) in `mcp_servers/` |
 
 A **Components** panel appears at the top of the Sources tab listing anything missing, with an Install button and a live pip log. Data source cards that need a component say so and offer to install it; picking such a type from **Connect** starts the download while you fill in the form. Progress survives a page reload — the install runs server-side.
 
@@ -180,7 +181,8 @@ $env:HOST="0.0.0.0"; .\run.ps1
 | **Request timeout** | Seconds to wait for a reply; raise it for slow local models |
 | **HubSpot private app token** | Fallback for HubSpot sources with no token of their own |
 | **Commit tickets to HubSpot** | `auto` / `manual` / `off` — see [Where tickets end up](#where-tickets-end-up) |
-| **Microsoft tenant / client ID / client secret / default mailbox** | Fallback Entra ID app registration (Application permissions `Mail.Read` + `Mail.Send`, admin-consented) |
+| **Microsoft tenant / client ID / client secret / default mailbox** | Fallback Entra ID app registration (Application permissions `Mail.Read` + `Mail.Send`, admin-consented; `Calendars.Read` for calendar tools) |
+| **Additional mailboxes** | Further mailboxes the bot and MCP server may read. Filling it in makes it an allowlist — see [MCP servers](#several-mailboxes-not-one) |
 
 **Test model connection** in that dialog does a one-token round trip, so you know the provider, key and model work before anyone asks a question.
 
@@ -191,12 +193,59 @@ Data source credentials (per-source HubSpot tokens, database URLs, REST API keys
 <details>
 <summary>Prefer environment variables?</summary>
 
-Still supported, and useful for automated deployments. Copy `.env.example` to `.env` in this folder (`cp .env.example .env`, or `Copy-Item .env.example .env` in PowerShell) and fill in `LLM_PROVIDER`, `LLM_MODEL`, `ANTHROPIC_API_KEY` / `LLM_API_KEY`, `LLM_BASE_URL`, `HUBSPOT_TOKEN`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX`. Real environment variables work too, as does an `ant auth login` session for the Claude key.
+Still supported, and useful for automated deployments. Copy `.env.example` to `.env` in this folder (`cp .env.example .env`, or `Copy-Item .env.example .env` in PowerShell) and fill in `LLM_PROVIDER`, `LLM_MODEL`, `ANTHROPIC_API_KEY` / `LLM_API_KEY`, `LLM_BASE_URL`, `HUBSPOT_TOKEN`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX`, `MS_MAILBOXES`. Real environment variables work too, as does an `ant auth login` session for the Claude key.
 
 Resolution order for every setting: **UI value → environment/`.env` → default.**
 </details>
 
 Settings are stored in `data/app.db` (gitignored) in plain text, like the per-source credentials the app already keeps there — that file is as sensitive as the keys in it. Anyone signed in can view field names and change values; they can never read a stored secret back.
+
+## MCP servers — the same connectors, outside this app
+
+The Microsoft 365 and HubSpot connectors are also published as **MCP servers**, so Claude Code, Claude Desktop or any other MCP client can read the team's mailboxes and CRM directly. They are separate processes in `mcp_servers/`, sharing this app's configuration: whatever you set up on the Sources tab is what they use.
+
+| Server | Tools |
+|---|---|
+| **`ms365`** — Outlook mail & calendar | `list_mailboxes`, `list_folders`, `search_mail`, `read_mail`, `list_calendar_events`, `check_availability` — plus `reply_to_mail` and `send_mail` under `--allow-writes` |
+| **`hubspot`** — CRM (read-only) | `list_object_types`, `search_records`, `get_record`, `list_associated_records` |
+
+### Several mailboxes, not one
+
+A customer success team rarely has one inbox. Every mail and calendar tool takes an optional `mailbox` argument; leave it out and the source's **default mailbox** is used, or call `list_mailboxes` to see what is reachable.
+
+Which mailboxes *are* reachable depends on one field — **Additional mailboxes** on the Microsoft 365 source (or `MS_MAILBOXES`):
+
+- **Left blank** — any mailbox the Entra ID app registration can see. Client-credentials `Mail.Read` is tenant-wide by default, so this means every mailbox in the tenant. Scope it in Entra with an [application access policy](https://learn.microsoft.com/en-us/graph/auth-limit-mailbox-access).
+- **Filled in** — an allowlist. Only the addresses you list, plus the default mailbox, can be read; anything else is refused before a request reaches Graph.
+
+The same applies to the bot inside the app, which gained a `list_mailboxes` tool and a `mailbox` argument on `search_email` / `read_email` / `reply_email`.
+
+### Connecting a client
+
+The repo ships a `.mcp.json`, so **Claude Code opened in this folder finds both servers already configured** — read-only. On Windows change `.venv/bin/python` to `.venv\Scripts\python.exe`.
+
+For Claude Desktop, or to register them by hand, point the client at the script with an absolute path (the servers do not care what directory they start in):
+
+```bash
+claude mcp add ms365 -- /path/to/cust-success/.venv/bin/python /path/to/cust-success/mcp_servers/ms365_server.py
+claude mcp add hubspot -- /path/to/cust-success/.venv/bin/python /path/to/cust-success/mcp_servers/hubspot_server.py
+```
+
+Both take `--source-id N` to pick a particular data source when the team has more than one of a type (`CSHUB_MS365_SOURCE_ID` / `CSHUB_HUBSPOT_SOURCE_ID` do the same). With no flag they use the only enabled source of that type, and fall back to the shared `MS_*` / `HUBSPOT_TOKEN` settings — and then to demo data — if none exists. Configuration is re-read on every call, so editing a source on the Sources tab takes effect without restarting the client.
+
+### Sending mail is opt-in
+
+The mail server registers only reading tools by default: a client connected to it cannot email anyone. Add `--allow-writes` to also register `reply_to_mail` and `send_mail`, which are marked as destructive so a client can prompt before calling them.
+
+```bash
+claude mcp add ms365 -- /path/to/.venv/bin/python /path/to/mcp_servers/ms365_server.py --allow-writes
+```
+
+The HubSpot server has no write tools at all.
+
+### Installing the runtime
+
+The servers need the `mcp` package — the **MCP runtime** component on the Sources tab, or `.venv/bin/pip install mcp`. Without it they exit with that instruction on stderr, which is what an MCP client shows when a server fails to start.
 
 ## Choosing a model
 
@@ -281,9 +330,14 @@ app/
   sqlsource.py     External SQL databases (SQLAlchemy, read-only)
   restsource.py    Generic REST API connector
   hubspot.py       HubSpot CRM client (demo fallback)
-  ms365.py         Microsoft Graph mail client (demo fallback)
+  ms365.py         Microsoft Graph mail + calendar client, multi-mailbox (demo fallback)
   reports.py       HTML report + python-pptx presentation generation
   static/          Web UI (vanilla JS, no build step)
+mcp_servers/       MCP servers exposing the connectors to any MCP client
+  ms365_server.py  Outlook mail + calendar over stdio; sending is opt-in
+  hubspot_server.py  HubSpot CRM over stdio, read-only
+  _common.py       Source lookup, error text, the shared argument parser
+.mcp.json          Registers both servers for Claude Code opened in this folder
 data/              SQLite DBs, uploads, generated artifacts, ticket exports (gitignored)
                    — set CSHUB_DATA_DIR to put this somewhere else, as the installer does
 ```
@@ -292,3 +346,4 @@ Notes:
 - Auth is lightweight (name + email → bearer token) — intended for a trusted internal team behind your network/VPN, not the public internet. There are no roles: everyone who can sign in can edit settings and data sources.
 - Installing components needs a signed-in user and only accepts the component keys in `app/deps.py`; set `DISABLE_UI_INSTALL=1` to switch it off on a locked-down box.
 - Spreadsheet SQL is enforced read-only; email replies require explicit user approval in chat before the bot calls the send tool.
+- The MCP servers are read-only unless started with `--allow-writes`, and honour the mailbox allowlist before any request reaches Graph. They are as trusted as the client you connect them to — an MCP client with the mail server attached can read every mailbox the source permits.

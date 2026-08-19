@@ -118,6 +118,14 @@ FIELDS = [
     {
         "key": "MS_MAILBOX", "group": "shared", "label": "Default mailbox",
         "kind": "text", "placeholder": "success@yourcompany.com",
+        "help": "Used whenever a request doesn't name a mailbox.",
+    },
+    {
+        "key": "MS_MAILBOXES", "group": "shared", "label": "Additional mailboxes",
+        "kind": "textarea", "placeholder": "renewals@yourcompany.com, escalations@yourcompany.com",
+        "help": "Comma-separated (or one per line). Listing any here turns the set into an "
+                "allowlist: only these and the default mailbox can be read. Leave blank and "
+                "every mailbox the app registration can reach is available.",
     },
 ]
 

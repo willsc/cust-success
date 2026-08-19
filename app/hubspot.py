@@ -45,6 +45,33 @@ DEMO_DATA = {
     ],
 }
 
+# contact/company/deal/ticket wiring for the demo portal, keyed
+# "<object_type>:<id>" -> {related object type: [ids]}.
+DEMO_ASSOCIATIONS = {
+    "contacts:101": {"companies": ["201"], "deals": ["301"], "tickets": ["401"]},
+    "contacts:102": {"companies": ["202"], "deals": ["302"], "tickets": ["402"]},
+    "contacts:103": {"companies": ["203"], "deals": ["303"], "tickets": []},
+    "companies:201": {"contacts": ["101"], "deals": ["301"], "tickets": ["401"]},
+    "companies:202": {"contacts": ["102"], "deals": ["302"], "tickets": ["402"]},
+    "companies:203": {"contacts": ["103"], "deals": ["303"], "tickets": []},
+    "deals:301": {"contacts": ["101"], "companies": ["201"], "tickets": []},
+    "deals:302": {"contacts": ["102"], "companies": ["202"], "tickets": []},
+    "deals:303": {"contacts": ["103"], "companies": ["203"], "tickets": []},
+    "tickets:401": {"contacts": ["101"], "companies": ["201"], "deals": []},
+    "tickets:402": {"contacts": ["102"], "companies": ["202"], "deals": []},
+}
+
+
+def object_types() -> list[str]:
+    return sorted(DEFAULT_PROPERTIES)
+
+
+def _check_type(object_type: str) -> str:
+    object_type = (object_type or "").lower().strip()
+    if object_type not in DEFAULT_PROPERTIES:
+        raise ValueError(f"object_type must be one of {sorted(DEFAULT_PROPERTIES)}")
+    return object_type
+
 
 def _token(source_config: dict | None = None) -> str:
     """Per-source token, falling back to the shared one from Settings/environment."""
@@ -77,9 +104,7 @@ def properties_for(object_type: str, source_config: dict | None = None) -> list[
 def query(object_type: str, search: str = "", limit: int = 20,
           source_config: dict | None = None) -> dict:
     """Search or list CRM objects. object_type: contacts | companies | deals | tickets."""
-    object_type = object_type.lower().strip()
-    if object_type not in DEFAULT_PROPERTIES:
-        raise ValueError(f"object_type must be one of {sorted(DEFAULT_PROPERTIES)}")
+    object_type = _check_type(object_type)
     limit = max(1, min(int(limit), 100))
 
     if not configured(source_config):
@@ -108,3 +133,69 @@ def query(object_type: str, search: str = "", limit: int = 20,
     data = resp.json()
     results = [{"id": r.get("id"), **(r.get("properties") or {})} for r in data.get("results", [])]
     return {"source": "hubspot", "results": results}
+
+
+def get(object_type: str, record_id: str, source_config: dict | None = None) -> dict:
+    """One CRM record by its id, with the properties this source is set up to read."""
+    object_type = _check_type(object_type)
+    record_id = str(record_id).strip()
+    if not record_id:
+        raise ValueError("record_id is required")
+
+    if not configured(source_config):
+        for item in DEMO_DATA[object_type]:
+            if item["id"] == record_id:
+                return {"source": "demo (no HubSpot token configured)",
+                        "object_type": object_type, "record": item}
+        raise ValueError(f"{object_type} record {record_id!r} not found in the demo portal")
+
+    props = properties_for(object_type, source_config)
+    with httpx.Client(timeout=30) as client:
+        resp = client.get(
+            f"{BASE}/crm/v3/objects/{object_type}/{record_id}",
+            headers={"Authorization": f"Bearer {_token(source_config)}"},
+            params={"properties": ",".join(props)},
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {"source": "hubspot", "object_type": object_type,
+            "record": {"id": data.get("id"), **(data.get("properties") or {})}}
+
+
+def associations(object_type: str, record_id: str, to_object_type: str,
+                 limit: int = 50, source_config: dict | None = None) -> dict:
+    """Records associated with one record — the company behind a contact, a
+    customer's open deals, the tickets on an account."""
+    object_type = _check_type(object_type)
+    to_object_type = _check_type(to_object_type)
+    record_id = str(record_id).strip()
+    limit = max(1, min(int(limit), 100))
+
+    if not configured(source_config):
+        ids = DEMO_ASSOCIATIONS.get(f"{object_type}:{record_id}", {}).get(to_object_type, [])
+        related = [i for i in DEMO_DATA[to_object_type] if i["id"] in ids][:limit]
+        return {"source": "demo (no HubSpot token configured)", "from": object_type,
+                "to": to_object_type, "results": related}
+
+    headers = {"Authorization": f"Bearer {_token(source_config)}"}
+    with httpx.Client(timeout=30) as client:
+        resp = client.get(
+            f"{BASE}/crm/v4/objects/{object_type}/{record_id}/associations/{to_object_type}",
+            headers=headers, params={"limit": limit},
+        )
+        resp.raise_for_status()
+        ids = [r.get("toObjectId") for r in resp.json().get("results", []) if r.get("toObjectId")]
+        if not ids:
+            return {"source": "hubspot", "from": object_type, "to": to_object_type, "results": []}
+
+        # One batch read rather than a request per id.
+        resp = client.post(
+            f"{BASE}/crm/v3/objects/{to_object_type}/batch/read",
+            headers=headers,
+            json={"properties": properties_for(to_object_type, source_config),
+                  "inputs": [{"id": str(i)} for i in ids]},
+        )
+    resp.raise_for_status()
+    results = [{"id": r.get("id"), **(r.get("properties") or {})}
+               for r in resp.json().get("results", [])]
+    return {"source": "hubspot", "from": object_type, "to": to_object_type, "results": results}

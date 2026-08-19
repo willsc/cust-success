@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "ms365": {
+      "command": ".venv/bin/python",
+      "args": ["mcp_servers/ms365_server.py"],
+      "env": {}
+    },
+    "hubspot": {
+      "command": ".venv/bin/python",
+      "args": ["mcp_servers/hubspot_server.py"],
+      "env": {}
+    }
+  }
+}
