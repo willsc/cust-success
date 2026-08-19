@@ -30,6 +30,13 @@ Guidelines:
 - Pass source_id when more than one source of a type exists; omit it when there is only one.
 - For SQL sources, inspect the table/column list from list_data_sources, then write precise SELECT queries.
   Spreadsheets are SQLite; external databases use their own dialect (Postgres, MySQL, ...).
+- HubSpot and mailbox sources may also have synced_tables: a local copy of their records, refreshed
+  when someone presses Sync. Use those with query_sql for anything that counts, groups, totals or
+  joins across sources - they are all in one SQLite database, so a synced deal list joins straight
+  to an uploaded spreadsheet. Use the live tools (hubspot_query, search_email) for looking up a
+  specific record, or when the answer must reflect the last few minutes. Say which you used, and
+  mention synced_at when quoting an aggregate, so nobody mistakes stale figures for live ones.
+  If a source has no synced_tables yet, say so and suggest pressing Sync on the Sources tab.
 - Cite concrete numbers from the data; never invent customer data.
 - A mailbox source may cover several mailboxes. Call list_mailboxes when the request names one
   other than the default, and pass that mailbox to search_email/read_email/reply_email.
@@ -62,7 +69,7 @@ TOOLS = [
     },
     {
         "name": "query_sql",
-        "description": "Run a read-only SELECT against a SQL-queryable data source - either an uploaded spreadsheet set (SQLite dialect) or a connected SQL database (its own dialect). Use list_data_sources first for table and column names. Results are capped at 200 rows.",
+        "description": "Run a read-only SELECT against the local store (uploaded spreadsheets plus any synced HubSpot/mailbox tables, all in one SQLite database, so they can be joined to each other) or against a connected SQL database (its own dialect). This is the tool for totals, counts, groupings and trends. Use list_data_sources first for table and column names. Results are capped at 200 rows.",
         "input_schema": {
             "type": "object",
             "properties": {

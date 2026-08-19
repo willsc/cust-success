@@ -100,6 +100,37 @@ A signed-in user reaches **their own** mailbox and calendar, plus shared mailbox
 
 The older path is still there, under **Advanced** in the source's dialog: an app registration with *application* permissions and a client secret, or a HubSpot private-app token. Existing installs keep working untouched. Application permissions reach **every** mailbox in the tenant, which is why the mailbox allowlist matters more on that path — see [MCP servers](#several-mailboxes-not-one).
 
+### Pulling the data in, so it can be aggregated
+
+Connected sources answer questions one record at a time, over the network. That is the wrong shape for the questions a customer success team actually asks — pipeline by stage, mail volume per account, this quarter against last — and none of it can be joined to a spreadsheet.
+
+So each HubSpot and mailbox source has a **Sync** button. It pulls the records into the same local SQLite store the uploaded spreadsheets live in:
+
+| Source | Tables it creates |
+|---|---|
+| HubSpot CRM | `hubspot_contacts`, `hubspot_companies`, `hubspot_deals`, `hubspot_tickets` |
+| Microsoft 365 Mail | `mail_messages` — one row per message header, across every mailbox the source can reach |
+
+The card then shows what came in and when. Because it is all one database, the bot can total, group and **join across services** in a single query — a synced deal list against mail volume against an uploaded usage export:
+
+```sql
+SELECT c.company, COUNT(m.id) AS emails, d.dealname, d.amount
+FROM hubspot_contacts c
+LEFT JOIN mail_messages m  ON m.from_address = c.email
+LEFT JOIN hubspot_deals  d ON d.dealname LIKE c.company || '%'
+GROUP BY c.company ORDER BY emails DESC
+```
+
+Just ask the console for the aggregate in plain English — it writes the SQL itself.
+
+Things worth knowing:
+
+- A sync **replaces** each table rather than merging. These are thousands of rows, not millions; a full pull is easy to reason about, and a half-updated table is worse than a slightly stale one.
+- Figures come from the last sync, not from this second. The bot is told to quote `synced_at` alongside an aggregate so stale numbers are not mistaken for live ones; use the live tools when the answer must be current.
+- Mail sync stores **headers only** — subject, sender, date, preview. Bodies are large and rarely what an aggregate needs; the bot can still fetch one on demand.
+- A source that has not been connected yet syncs its demo data, which is a fair way to see the shape of it before wiring anything up.
+- Ceilings of 5,000 records per CRM object and 1,000 messages per mailbox keep one sync from running away.
+
 **The description field matters.** Each source has a "what's in it" box that the bot reads to decide when to use that source — so write it for the bot: *"Monthly product usage exports per customer: seats, logins, feature adoption."* Better descriptions mean better answers.
 
 Other things worth knowing:
@@ -255,13 +286,11 @@ The same applies to the bot inside the app, which gained a `list_mailboxes` tool
 
 ### Connecting a client
 
-**The Sources tab has a "Connect Claude Desktop" button.** That is the whole procedure: it works out this machine's Python and the absolute paths of the servers — which differ between a checkout, a venv and the installer's private runtime — and writes them into Claude Desktop's config. Quit Claude Desktop and reopen it and the tools are there. A checkbox on the same panel decides whether it may also send mail; the panel shows the exact JSON for any other assistant, and a Disconnect button takes the entries out again.
-
-Because that file belongs to another application, the button is careful with it. It never creates a config where Claude Desktop is not installed, never touches one holding JSON it cannot parse (it says so and stops, rather than guessing), copies the file to a timestamped backup before every change, and **merges** — MCP servers you set up yourself, and any other settings in the file, are left exactly as they were. Disconnect removes only this app's two entries.
+These servers are entirely optional — the app itself does not need them, and most people will not want them. They exist for driving the same data from an assistant.
 
 **Claude Code** opened in this folder needs nothing: the repo ships a `.mcp.json` and picks both servers up read-only. On Windows change `.venv/bin/python` to `.venv\Scripts\python.exe`.
 
-To register them by hand instead, point the client at the script with an absolute path (the servers do not care what directory they start in):
+For any other client, point it at the script with an absolute path (the servers do not care what directory they start in):
 
 ```bash
 claude mcp add ms365 -- /path/to/cust-success/.venv/bin/python /path/to/cust-success/mcp_servers/ms365_server.py
@@ -376,10 +405,10 @@ app/
   restsource.py    Generic REST API connector
   oauth.py         Signing in to Microsoft (device code) and HubSpot (redirect);
                    token storage and refresh, so nobody handles a secret
+  ingest.py        Syncs HubSpot records and mailbox headers into the local SQLite
+                   store, so they can be counted, grouped and joined
   hubspot.py       HubSpot CRM client (demo fallback)
   ms365.py         Microsoft Graph mail + calendar client, multi-mailbox (demo fallback)
-  mcpsetup.py      Generates the MCP client config for this machine; merges it into
-                   Claude Desktop's file, with backups, never clobbering other servers
   reports.py       HTML report + python-pptx presentation generation
   static/          Web UI (vanilla JS, no build step)
 mcp_servers/       MCP servers exposing the connectors to any MCP client (shipped by the installer too)
@@ -396,5 +425,4 @@ Notes:
 - Installing components needs a signed-in user and only accepts the component keys in `app/deps.py`; set `DISABLE_UI_INSTALL=1` to switch it off on a locked-down box.
 - Spreadsheet SQL is enforced read-only; email replies require explicit user approval in chat before the bot calls the send tool.
 - OAuth tokens are stored server-side in `data/app.db` and never sent to the browser: the UI is told who is signed in, not what with. Editing a source cannot overwrite or clear them.
-- Connecting Claude Desktop writes to a file owned by another application: it is backed up first, merged rather than replaced, and left alone entirely if it cannot be parsed.
 - The MCP servers are read-only unless started with `--allow-writes`, and honour the mailbox allowlist before any request reaches Graph. They are as trusted as the client you connect them to — an MCP client with the mail server attached can read every mailbox the source permits.

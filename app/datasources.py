@@ -8,7 +8,7 @@ connector module.
 """
 import json
 
-from . import db, deps, hubspot, ms365, oauth, restsource, spreadsheets, sqlsource
+from . import db, deps, hubspot, ingest, ms365, oauth, restsource, spreadsheets, sqlsource
 
 # Field spec drives both the UI form and secret masking.
 # kind: text | password | textarea | select | checkbox | number
@@ -205,12 +205,16 @@ def _public(row: dict) -> dict:
         "config": masked,
         "connection": connection_state(row, config),
     }
-    if row["type"] == "spreadsheet":
+    if row["type"] == "spreadsheet" or ingest.can_sync(row["type"]):
+        tables = db.sheet_tables(row["id"])
         out["tables"] = [
             {"table": t["table_name"], "rows": t["row_count"],
-             "columns": json.loads(t["columns_json"]), "file": t["source_file"]}
-            for t in db.sheet_tables(row["id"])
+             "columns": json.loads(t["columns_json"]), "file": t["source_file"],
+             "synced_at": t["created_at"]}
+            for t in tables
         ]
+        out["syncable"] = ingest.can_sync(row["type"])
+        out["last_synced"] = max((t["created_at"] for t in tables), default="")
     return out
 
 
@@ -304,6 +308,17 @@ def test(ds_id: int) -> dict:
 
 # ---------- what the bot sees ----------
 
+def _synced(ds_id: int) -> list[dict]:
+    """Tables this source has pulled into the local store, for the bot's catalog.
+
+    Listed alongside the live query tools on purpose: aggregates come from these,
+    one-off lookups from the live tools, and the bot needs to see both to choose.
+    """
+    return [{"table": t["table_name"], "rows": t["row_count"],
+             "columns": json.loads(t["columns_json"]), "synced_at": t["created_at"]}
+            for t in db.sheet_tables(ds_id)]
+
+
 def _catalog_entry(row: dict) -> dict:
     config = _parse(row)
     entry = {
@@ -322,10 +337,12 @@ def _catalog_entry(row: dict) -> dict:
             entry["query_with"] = "query_sql"
         elif row["type"] == "hubspot":
             entry["objects"] = sorted(hubspot.DEFAULT_PROPERTIES)
+            entry["synced_tables"] = _synced(row["id"])
             entry["live"] = hubspot.configured(config)
             entry["signed_in_as"] = oauth.account_of(config)
             entry["query_with"] = "hubspot_query"
         elif row["type"] == "ms365_mail":
+            entry["synced_tables"] = _synced(row["id"])
             entry["mailbox"] = ms365._settings(config)["mailbox"] or "(demo inbox)"
             entry["mailboxes"] = ms365.allowlist(config) or ["(demo inbox)"]
             entry["mailbox_allowlist"] = ms365.restricted(config)
@@ -373,6 +390,14 @@ def _resolve(ds_id: int | None, type_: str) -> tuple[dict, dict]:
     return _raw(candidates[0]["id"])
 
 
+def sync(ds_id: int) -> dict:
+    """Pull this source's records into the local store."""
+    row, config = _raw(ds_id)
+    if not row["enabled"]:
+        raise ValueError(f"Data source '{row['name']}' is disabled")
+    return ingest.sync(ds_id, row["type"], config)
+
+
 def resolve_by_id(ds_id: int) -> tuple[dict, dict]:
     """(row, unmasked config) for one source by id, for the sign-in endpoints."""
     return _raw(ds_id)
@@ -388,27 +413,36 @@ def resolve_config(type_: str, source_id: int | None = None) -> tuple[dict, dict
 # ---------- query dispatch used by the bot ----------
 
 def query_sql(sql: str, source_id: int | None = None) -> dict:
-    """Route a SELECT to either the spreadsheet store or an external SQL database."""
+    """Route a SELECT to the local store or to an external SQL database.
+
+    Uploaded spreadsheets and synced HubSpot/mailbox tables all live in one
+    SQLite file, so they count as a single target however many sources fed them
+    — which is the point: a synced deal list can be joined to an uploaded usage
+    export in one query.
+    """
     if source_id is not None:
         row, config = _raw(int(source_id))
         if not row["enabled"]:
             raise ValueError(f"Data source '{row['name']}' is disabled")
-        if row["type"] == "spreadsheet":
-            return spreadsheets.run_sql(sql)
         if row["type"] == "sql_database":
             return sqlsource.run_sql(config, sql)
+        if row["type"] == "spreadsheet" or ingest.can_sync(row["type"]):
+            return spreadsheets.run_sql(sql)
         raise ValueError(f"Data source {source_id} ({row['type']}) cannot be queried with SQL")
 
-    sql_sources = [r for r in db.list_datasources(enabled_only=True)
-                   if r["type"] in ("spreadsheet", "sql_database")]
-    if not sql_sources:
-        raise ValueError("No SQL-queryable data source is configured yet.")
-    if len(sql_sources) > 1:
-        names = ", ".join(f"{r['id']}={r['name']}" for r in sql_sources)
-        raise ValueError(f"Several SQL sources exist — pass source_id. Options: {names}")
-    only = sql_sources[0]
-    return (spreadsheets.run_sql(sql) if only["type"] == "spreadsheet"
-            else sqlsource.run_sql(_parse(only), sql))
+    externals = [r for r in db.list_datasources(enabled_only=True) if r["type"] == "sql_database"]
+    has_local = bool(db.sheet_tables())
+    if not externals and not has_local:
+        raise ValueError(
+            "Nothing is loaded locally yet. Upload a spreadsheet, or press Sync on a "
+            "HubSpot or mailbox source to pull its data in.")
+    if not externals:
+        return spreadsheets.run_sql(sql)
+    if not has_local and len(externals) == 1:
+        return sqlsource.run_sql(_parse(externals[0]), sql)
+    options = ", ".join(f"{r['id']}={r['name']}" for r in externals)
+    local = " plus the local store (any spreadsheet or synced source id)" if has_local else ""
+    raise ValueError(f"Several SQL targets exist — pass source_id. Databases: {options}{local}.")
 
 
 def hubspot_query(object_type: str, search: str = "", limit: int = 20,

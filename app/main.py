@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (bot, datasources, db, deps, llm, mcpsetup, oauth, settings, sla, spreadsheets,
+from . import (bot, datasources, db, deps, llm, oauth, settings, sla, spreadsheets,
                ticketsync, tickets)
 from .config import ARTIFACT_DIR, BASE_DIR, EXPORT_DIR
 
@@ -267,6 +267,17 @@ def datasource_test(ds_id: int, user: dict = Depends(current_user)):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.post("/api/datasources/{ds_id}/sync")
+def datasource_sync(ds_id: int, user: dict = Depends(current_user)):
+    """Pull this source's records into the local store so they can be aggregated."""
+    try:
+        return datasources.sync(ds_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Sync failed: {exc}")
+
+
 @app.post("/api/datasources/{ds_id}/upload")
 async def datasource_upload(ds_id: int, file: UploadFile = File(...), user: dict = Depends(current_user)):
     source = datasources.get_source(ds_id)
@@ -451,34 +462,6 @@ def _oauth_page(title: str, detail: str) -> str:
 color:#1c1e21}}h1{{font-size:1.25rem;margin:0 0 .5rem}}p{{color:#5c6470}}
 @media(prefers-color-scheme:dark){{body{{background:#16181c;color:#e8eaed}}p{{color:#9aa3af}}}}</style>
 <h1>{escape(title)}</h1><p>{escape(detail)}</p>"""
-
-
-# ---------- connecting a desktop assistant to the MCP servers ----------
-
-class ConnectRequest(BaseModel):
-    allow_writes: bool = False
-
-
-@app.get("/api/mcp")
-def mcp_status(user: dict = Depends(current_user)):
-    """The config this machine needs, and whether Claude Desktop already has it."""
-    return mcpsetup.status()
-
-
-@app.post("/api/mcp/connect")
-def mcp_connect(body: ConnectRequest, user: dict = Depends(current_user)):
-    try:
-        return mcpsetup.connect(body.allow_writes)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/api/mcp/disconnect")
-def mcp_disconnect(user: dict = Depends(current_user)):
-    try:
-        return mcpsetup.disconnect()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/artifacts")
