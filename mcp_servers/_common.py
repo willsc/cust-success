@@ -14,25 +14,92 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+MCP_PACKAGE = "mcp"
+
 SDK_HINT = (
-    "The MCP runtime is not installed. Install it into the same environment as this app:\n"
-    "    pip install mcp\n"
-    "or open the app's Sources tab and install the 'MCP runtime' component."
+    f"The MCP runtime is missing and could not be installed automatically.\n"
+    f"Install it into this app's environment by hand:\n"
+    f"    {sys.executable} -m pip install {MCP_PACKAGE}"
 )
 
 
-def sdk():
-    """The MCPServer class, or a clear message on stderr and a non-zero exit.
+def _note(message: str) -> None:
+    """Say something to the operator.
 
-    An MCP client shows a server's stderr when it fails to start, so this is the
-    one place a missing dependency can actually be explained to someone.
+    Always stderr: stdout is the JSON-RPC channel, and one stray byte on it
+    breaks the protocol. An MCP client surfaces a server's stderr, so this is
+    where a non-technical user actually sees what is happening.
+    """
+    print(message, file=sys.stderr, flush=True)
+
+
+def _autoinstall() -> bool:
+    """Install the MCP runtime into this interpreter. True if it is now importable.
+
+    `mcp` is a base requirement, so the launchers and the Windows installer put
+    it in place long before anything gets here. This is the last resort for an
+    environment they never touched — someone who pointed a client straight at a
+    fresh checkout — because "run pip install" is not an instruction this app's
+    users can be expected to act on.
+    """
+    import importlib
+    import subprocess
+
+    from app import deps
+
+    if not deps.install_enabled():
+        _note("The MCP runtime is missing, and automatic installs are switched off "
+              "here (DISABLE_UI_INSTALL).")
+        return False
+    if not deps.isolated_runtime():
+        # Never pip into a system or shared interpreter uninvited.
+        _note("The MCP runtime is missing, and this is a shared Python installation, "
+              "so it will not be installed automatically.")
+        return False
+
+    _note(f"Installing the MCP runtime ({MCP_PACKAGE}) into {sys.executable} — "
+          f"this happens once and needs internet access.")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+             "--no-input", MCP_PACKAGE],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _note(f"The install could not be started: {exc}")
+        return False
+
+    if proc.returncode != 0:
+        _note(proc.stdout.strip()[-2000:])
+        _note(f"pip exited with code {proc.returncode}.")
+        return False
+
+    importlib.invalidate_caches()
+    _note("MCP runtime installed. Starting up.")
+    return True
+
+
+def sdk():
+    """The MCPServer class, installing the runtime first if it is missing.
+
+    A client that gave up waiting during the install will connect fine on its
+    next attempt, since by then the package is there.
     """
     try:
         from mcp.server import MCPServer
+        return MCPServer
     except ImportError:
-        print(SDK_HINT, file=sys.stderr)
-        raise SystemExit(2)
-    return MCPServer
+        pass
+
+    if _autoinstall():
+        try:
+            from mcp.server import MCPServer
+            return MCPServer
+        except ImportError:
+            pass
+
+    _note(SDK_HINT)
+    raise SystemExit(2)
 
 
 def parse_args(description: str, env_var: str, writes: str = "") -> argparse.Namespace:

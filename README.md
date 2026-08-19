@@ -138,7 +138,7 @@ chmod +x run.sh
 
 ### Optional components — installed from the UI
 
-The base install is only the web server, the Claude SDK and `httpx` (which is all the other model providers need). The heavier pieces are installed **from the Sources tab, one click, when you first need them** — no terminal, no restart, and a machine that never touches spreadsheets never downloads pandas.
+The base install is only the web server, the Claude SDK, `httpx` (which is all the other model providers need) and the MCP runtime. The heavier pieces are installed **from the Sources tab, one click, when you first need them** — no terminal, no restart, and a machine that never touches spreadsheets never downloads pandas.
 
 | Component | Installs | Needed for |
 |---|---|---|
@@ -147,7 +147,6 @@ The base install is only the web server, the Claude SDK and `httpx` (which is al
 | PostgreSQL driver | `psycopg2-binary` | `postgresql://` connection URLs |
 | MySQL driver | `pymysql` | `mysql://` connection URLs |
 | Presentation builder | `python-pptx` | Bot-generated `.pptx` decks |
-| MCP runtime | `mcp` | The [MCP servers](#mcp-servers--the-same-connectors-outside-this-app) in `mcp_servers/` |
 
 A **Components** panel appears at the top of the Sources tab listing anything missing, with an Install button and a live pip log. Data source cards that need a component say so and offer to install it; picking such a type from **Connect** starts the download while you fill in the form. Progress survives a page reload — the install runs server-side.
 
@@ -243,9 +242,17 @@ claude mcp add ms365 -- /path/to/.venv/bin/python /path/to/mcp_servers/ms365_ser
 
 The HubSpot server has no write tools at all.
 
-### Installing the runtime
+### Nothing to install
 
-The servers need the `mcp` package — the **MCP runtime** component on the Sources tab, or `.venv/bin/pip install mcp`. Without it they exit with that instruction on stderr, which is what an MCP client shows when a server fails to start.
+The servers' runtime (the `mcp` package) is part of the **base install**, not an optional component, so it is already there however the app arrived:
+
+- **Windows installer** — baked into the bundled runtime, and `mcp_servers/` ships in the payload. Works offline.
+- **From source** — `run.sh` / `run.ps1` / `run.bat` reinstall whenever `requirements.txt` changes, so the next launch after an update picks it up.
+- **Neither** — if a client is ever pointed at an environment that somehow lacks it, the server installs it into its own interpreter on first launch, reports progress on stderr, and carries on. A client that gave up waiting during that install connects normally on its next attempt.
+
+That last fallback refuses to act in two cases, and says so instead: when `DISABLE_UI_INSTALL=1` is set, and when the interpreter is a shared or system Python rather than this app's own — nothing pips into a system interpreter uninvited.
+
+It is a base dependency precisely because an MCP client launches these servers itself and cannot stop halfway to install something, and "run `pip install`" is not an instruction this app's users should ever have to act on.
 
 ## Choosing a model
 
@@ -333,7 +340,7 @@ app/
   ms365.py         Microsoft Graph mail + calendar client, multi-mailbox (demo fallback)
   reports.py       HTML report + python-pptx presentation generation
   static/          Web UI (vanilla JS, no build step)
-mcp_servers/       MCP servers exposing the connectors to any MCP client
+mcp_servers/       MCP servers exposing the connectors to any MCP client (shipped by the installer too)
   ms365_server.py  Outlook mail + calendar over stdio; sending is opt-in
   hubspot_server.py  HubSpot CRM over stdio, read-only
   _common.py       Source lookup, error text, the shared argument parser

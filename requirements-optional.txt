@@ -19,6 +19,3 @@ pymysql
 
 # "decks" — .pptx generation
 python-pptx
-
-# "mcp" — the MCP servers in mcp_servers/ (Microsoft 365 + HubSpot)
-mcp

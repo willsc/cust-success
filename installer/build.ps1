@@ -124,9 +124,11 @@ New-Item -ItemType Directory -Force -Path (Join-Path $payload "service") | Out-N
 Copy-Item $winsw (Join-Path $payload "service\CustomerSuccessHubService.exe") -Force
 
 Say "Staging the application"
-Copy-Item (Join-Path $root "app") (Join-Path $payload "app") -Recurse -Force
-Get-ChildItem (Join-Path $payload "app") -Recurse -Directory -Filter "__pycache__" |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($dir in @("app", "mcp_servers")) {
+    Copy-Item (Join-Path $root $dir) (Join-Path $payload $dir) -Recurse -Force
+    Get-ChildItem (Join-Path $payload $dir) -Recurse -Directory -Filter "__pycache__" |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
 foreach ($file in @("requirements.txt", "requirements-optional.txt", "README.md", ".env.example")) {
     Copy-Item (Join-Path $root $file) (Join-Path $payload $file) -Force
 }

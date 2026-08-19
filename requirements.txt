@@ -8,3 +8,7 @@ anthropic       # the Claude provider; every other provider rides on httpx
 httpx
 python-multipart
 tzdata          # Windows has no system tz database; the SLA clock needs Europe/London
+# The MCP servers in mcp_servers/ are launched by an MCP client, not by us, and
+# it cannot stop to install anything first — so their runtime is a base
+# dependency rather than an optional component. Needs Python 3.10+, same as the app.
+mcp
