@@ -115,7 +115,15 @@ Don't have the installer? Build it: [`installer/README.md`](installer/README.md)
 powershell -ExecutionPolicy Bypass -File installer\install.ps1
 ```
 
-Fetches a private Python, installs everything, makes shortcuts, connects Claude Desktop to the [MCP servers](#mcp-servers--the-same-connectors-outside-this-app) and opens the app — no administrator, no prerequisites, not even Python. Add `-Service` to have it start with the machine, `-Network` to let colleagues reach it, `-Uninstall` to remove it again (your data folder is left alone). See [installer/README.md](installer/README.md) for every option.
+Fetches a private Python, installs everything, makes shortcuts, connects Claude Desktop to the [MCP servers](#mcp-servers--the-same-connectors-outside-this-app) and opens the app — no administrator, no prerequisites, not even Python. `-Uninstall` removes it again, leaving your data folder alone. See [installer/README.md](installer/README.md) for every option.
+
+**To have it run in the background as a Windows service**, add `-Service`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\install.ps1 -Service
+```
+
+It then starts with the machine (delayed auto-start), restarts itself if it dies, and writes rolling logs. This is the one step that asks for administrator, and it elevates just that step. Add `-Network` as well to let colleagues reach it — that opens the firewall port too. Manage it afterwards with `service.ps1 -Action status|start|stop|restart`, or from `services.msc` as **Customer Success Hub**.
 
 ### Windows 11 — from source
 
